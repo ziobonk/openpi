@@ -33,7 +33,11 @@ Piper 机械臂数据采集脚本。
 键盘控制:
     Enter   — 开始新的 episode（会提示输入指令语）
     s       — 停止当前 episode 并保存
-    q       — 退出程序
+    q       — 退出程序 (机械臂保持使能)
+    ESC     — 同 q
+
+相机预览窗口自动显示 base + wrist 画面并排，关闭:
+    --no_preview  禁用预览
 """
 
 import dataclasses
@@ -50,6 +54,14 @@ import numpy as np
 
 # --- 相机工具 (支持 RealSense D435i/D405 和 OpenCV) ---
 from camera_utils import RealSenseCameras, OpenCVCameras, create_cameras
+
+# --- OpenCV (用于预览窗口) ---
+try:
+    import cv2
+
+    HAS_CV2 = True
+except ImportError:
+    HAS_CV2 = False
 
 
 # ---------------------------------------------------------------------------
@@ -246,6 +258,8 @@ class CollectConfig:
     push_to_hub: bool = False
     # 示教模式: 记录从臂位姿作为 state 和 action
     teach_mode: bool = False
+    # 是否关闭相机预览窗口
+    no_preview: bool = False
 
 
 class DemoCollector:
@@ -276,6 +290,9 @@ class DemoCollector:
 
         # LeRobot 数据集（延迟创建，因为需要先确认 features）
         self._dataset: Optional[LeRobotDataset] = None
+
+        # 预览窗口
+        self._preview_active = HAS_CV2 and self._camera is not None and not config.no_preview
 
         # 运行状态
         self._running = False
@@ -308,6 +325,10 @@ class DemoCollector:
 
         # 初始化 LeRobot 数据集
         self._init_dataset()
+
+        # 启动相机预览窗口 (OpenCV 线程)
+        if self._preview_active:
+            self._start_preview()
 
         self._running = True
 
@@ -486,11 +507,13 @@ class DemoCollector:
     # ======================== 清理 ========================
 
     def _shutdown(self):
-        """清理资源。"""
+        """清理资源。退出时不失能机械臂。"""
         self._running = False
         if self._camera:
             self._camera.stop()
-        self._robot.disable()
+        # 关闭预览窗口
+        if self._preview_active:
+            cv2.destroyAllWindows()
 
         # 推送到 Hub (仅 HF 模式)
         if self._config.push_to_hub and self._config.repo_id and self._dataset:
@@ -503,7 +526,54 @@ class DemoCollector:
             )
             print("[Hub] 推送完成")
 
-        print("[INFO] 采集器已退出")
+        print("[INFO] 采集器已退出 (机械臂保持使能)")
+
+    # ======================== 相机预览 ========================
+
+    def _start_preview(self):
+        """启动相机预览窗口 (后台线程)。"""
+
+        def _preview_loop():
+            cv2.namedWindow("Camera Preview (base | wrist)", cv2.WINDOW_NORMAL)
+            cv2.resizeWindow("Camera Preview (base | wrist)", 896, 448)
+
+            while self._running:
+                base = np.zeros((DEFAULT_IMAGE_SIZE[1], DEFAULT_IMAGE_SIZE[0], 3), dtype=np.uint8)
+                wrist = np.zeros((DEFAULT_IMAGE_SIZE[1], DEFAULT_IMAGE_SIZE[0], 3), dtype=np.uint8)
+                if self._camera:
+                    if self._has_base_cam:
+                        base = self._camera.get_base()
+                    if self._has_wrist_cam:
+                        wrist = self._camera.get_wrist()
+                    elif self._has_base_cam:
+                        wrist = base  # 无腕部相机时复制基座画面
+
+                # RGB → BGR for OpenCV, 左右拼接
+                canvas = np.hstack([base[..., ::-1], wrist[..., ::-1]])
+                # 添加标签
+                cv2.putText(canvas, "base (D435i)", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                cv2.putText(
+                    canvas,
+                    "wrist (D405)",
+                    (DEFAULT_IMAGE_SIZE[0] + 10, 25),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.6,
+                    (0, 255, 0),
+                    2,
+                )
+
+                cv2.imshow("Camera Preview (base | wrist)", canvas)
+                # OpenCV 需要 poll 才能刷新窗口，同时捕获按键 (ESC 或 q 退出)
+                key = cv2.waitKey(33) & 0xFF  # ~30fps
+                if key in (27, ord("q")):  # ESC or q
+                    self._input_queue.put("quit")
+                    break
+
+            cv2.destroyAllWindows()
+
+        thread = threading.Thread(target=_preview_loop, daemon=True)
+        thread.start()
+        print("[Preview] 相机预览窗口已打开 (按 ESC 或 q 退出)")
 
     # ======================== 交互工具 ========================
 
@@ -598,6 +668,11 @@ def _parse_args() -> CollectConfig:
     )
     p.add_argument("--push_to_hub", action="store_true", help="采集完成后推送到 HuggingFace Hub (需 --repo_id)")
     p.add_argument(
+        "--no_preview",
+        action="store_true",
+        help="关闭相机预览窗口 (默认在有相机时自动开启)",
+    )
+    p.add_argument(
         "--teach_mode",
         action="store_true",
         help="示教模式: 记录从臂位姿作为 state 和 action (用于主从示教场景)",
@@ -623,6 +698,7 @@ def _parse_args() -> CollectConfig:
         cv_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
         push_to_hub=args.push_to_hub,
         teach_mode=args.teach_mode,
+        no_preview=args.no_preview,
     )
 
 

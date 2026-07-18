@@ -303,10 +303,9 @@ class PiperInference:
         except KeyboardInterrupt:
             print("\n[INFO] 中断信号，退出中...")
         finally:
-            self._robot.disable()
             if self._camera:
                 self._camera.stop()
-            print("[INFO] 已退出")
+            print("[INFO] 已退出 (机械臂保持使能)")
 
     def _connect_policy(self):
         """连接到策略服务器。"""
