@@ -20,6 +20,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.piper_policy as piper_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
 import openpi.training.droid_rlds_dataset as droid_rlds_dataset
@@ -347,6 +348,67 @@ class LeRobotLiberoDataConfig(DataConfigFactory):
         model_transforms = ModelTransformFactory()(model_config)
 
         # We return all data transforms for training and inference. No need to change anything here.
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotPiperDataConfig(DataConfigFactory):
+    """Piper 机械臂训练数据配置。
+
+    数据采集脚本 ``examples/piper/collect_demos.py`` 产生的 LeRobot 数据集
+    包含以下 feature:
+        - state:  float32 (7,)  [j1..j6(rad), gripper(raw_0.001mm)]
+        - actions: float32 (7,)  同上（采集时 = 当前 state）
+        - image:  uint8 (H,W,3)  基座 / 外部相机
+        - wrist_image: uint8 (H,W,3)  腕部相机
+        - task:   str  语言指令
+
+    如果你采集时未使用相机，image/wrist_image 会缺失，训练需要将
+    对应的 camera 字段从 LeRobot features 中删除。
+    """
+
+    # 如果数据中的 actions 是绝对关节位姿 (采集时即如此)，需要对关节做 delta 转换。
+    # Piper 采集默认记录绝对位姿，所以需要打开此开关。
+    use_delta_joint_actions: bool = True
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # repack: 将 LeRobot dataset 的 key 映射为推理时的 key
+        # 注意: prompt (task) 通过 prompt_from_task=True 自动注入，不需要在 repack 中映射
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/wrist_image": "wrist_image",
+                        "observation/state": "state",
+                        "actions": "actions",
+                    }
+                )
+            ]
+        )
+
+        # data_transforms: Piper ↔ openpi Observation 格式
+        data_transforms = _transforms.Group(
+            inputs=[piper_policy.PiperInputs(model_type=model_config.model_type)],
+            outputs=[piper_policy.PiperOutputs(piper_action_dim=7)],
+        )
+
+        if self.use_delta_joint_actions:
+            # 前6维 (关节) 做 delta，最后一维 (夹爪) 保持 absolute
+            delta_action_mask = _transforms.make_bool_mask(6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
         return dataclasses.replace(
             self.create_base_config(assets_dirs, model_config),
             repack_transforms=repack_transform,
@@ -760,6 +822,63 @@ _CONFIGS = [
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         pytorch_weight_path="/path/to/your/pytorch_weight_path",
         num_train_steps=30_000,
+    ),
+    #
+    # Fine-tuning Piper configs.
+    #
+    TrainConfig(
+        name="pi05_piper",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=7,
+            action_horizon=10,
+            discrete_state_input=False,  # Piper 状态是连续值，非离散 token
+        ),
+        data=LeRobotPiperDataConfig(
+            repo_id="your_hf_username/piper_data",  # ← 改成你的 LeRobot 数据集名称
+            assets=AssetsConfig(asset_id="piper"),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=2e-5,
+            decay_steps=50_000,
+            decay_lr=2e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        num_train_steps=30_000,
+        save_interval=2000,
+        keep_period=10000,
+    ),
+    TrainConfig(
+        name="pi0_piper",
+        model=pi0_config.Pi0Config(
+            action_dim=7,
+            action_horizon=10,
+        ),
+        data=LeRobotPiperDataConfig(
+            repo_id="your_hf_username/piper_data",  # ← 改成你的 LeRobot 数据集名称
+            assets=AssetsConfig(asset_id="piper"),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=True,
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=64,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=1_000,
+            peak_lr=2e-5,
+            decay_steps=50_000,
+            decay_lr=2e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=0.999,
+        num_train_steps=30_000,
+        save_interval=2000,
+        keep_period=10000,
     ),
     #
     # Fine-tuning Aloha configs.
