@@ -881,7 +881,7 @@ _CONFIGS = [
             local_data_dir="./piper_data",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
-        batch_size=32,  # LoRA 可用较大 batch
+        batch_size=8,  # 按显存调整: 24GB→8, 48GB→16, 80GB→32
         lr_schedule=_optimizer.CosineDecaySchedule(
             warmup_steps=500,
             peak_lr=1e-4,
