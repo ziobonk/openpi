@@ -43,7 +43,7 @@ Piper 机械臂数据采集脚本。
 import dataclasses
 import datetime
 import os
-import queue
+import select
 import shutil
 import sys
 import threading
@@ -282,9 +282,6 @@ class DemoCollector:
         self._has_base_cam = bool(config.rs2_base_serial or config.cv_base_id is not None)
         self._has_wrist_cam = bool(config.rs2_wrist_serial or config.cv_wrist_id is not None)
 
-        # 输入队列（用于跨线程传递键盘输入）
-        self._input_queue: queue.Queue[str] = queue.Queue()
-
         # LeRobot 数据集（延迟创建，因为需要先确认 features）
         self._dataset: Optional[LeRobotDataset] = None
 
@@ -328,11 +325,13 @@ class DemoCollector:
         if self._preview_active:
             self._start_preview()
 
-        self._running = True
+        # 打印操作提示
+        print("\n操作提示:")
+        print("  [Enter]  开始新 episode")
+        print("  [s]      停止当前 episode")
+        print("  [q]      退出\n")
 
-        # 键盘监听线程
-        input_thread = threading.Thread(target=self._keyboard_listener, daemon=True)
-        input_thread.start()
+        self._running = True
 
         try:
             self._main_loop()
@@ -344,7 +343,7 @@ class DemoCollector:
     # ======================== 主循环 ========================
 
     def _main_loop(self):
-        """主循环：等待键盘指令，管理录制状态。"""
+        """主循环：select 非阻塞读 stdin，管理录制状态。"""
         fps = self._config.fps
         period = 1.0 / fps
 
@@ -354,28 +353,26 @@ class DemoCollector:
         while self._running:
             loop_start = time.monotonic()
 
-            # 处理键盘事件
-            try:
-                cmd = self._input_queue.get_nowait()
-                if cmd == "start":
+            # 非阻塞检查键盘输入 (select 超时 0)
+            if select.select([sys.stdin], [], [], 0)[0]:
+                ch = sys.stdin.readline().strip().lower()
+                if ch == "":  # Enter
                     recording = True
                     self._recording = True
                     step = 0
                     task = self._prompt_for_task()
                     print(f"\n[Recording] 开始 episode, 指令: '{task}'")
                     print("[Recording] 按 's' 停止当前 episode")
-                elif cmd == "stop":
+                elif ch == "s":
                     if recording:
                         self._dataset.save_episode()
                         print(f"\n[Recording] Episode 已保存 (约 {step} 帧)")
                     recording = False
                     self._recording = False
                     step = 0
-                elif cmd == "quit":
+                elif ch == "q":
                     self._running = False
                     break
-            except queue.Empty:
-                pass
 
             if recording:
                 self._record_frame(task, step)
@@ -560,7 +557,7 @@ class DemoCollector:
                 cv2.imshow("Piper Camera (base | wrist)", canvas)
                 key = cv2.waitKey(33) & 0xFF
                 if key in (27, ord("q")):  # ESC or q
-                    self._input_queue.put("quit")
+                    self._running = False
                     break
 
             cv2.destroyAllWindows()
@@ -579,24 +576,6 @@ class DemoCollector:
             task = "do something"
         return task
 
-    def _keyboard_listener(self):
-        """监听键盘输入（运行在后台线程）。"""
-        print("\n操作提示:")
-        print("  [Enter]  开始新 episode")
-        print("  [s]      停止当前 episode")
-        print("  [q]      退出\n")
-
-        while self._running:
-            try:
-                ch = sys.stdin.readline().strip().lower()
-                if ch == "":
-                    self._input_queue.put("start")
-                elif ch == "s":
-                    self._input_queue.put("stop")
-                elif ch == "q":
-                    self._input_queue.put("quit")
-            except (EOFError, OSError):
-                break
 
 
 # ============================================================================

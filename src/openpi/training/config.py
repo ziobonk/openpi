@@ -3,6 +3,7 @@
 import abc
 from collections.abc import Sequence
 import dataclasses
+import os
 import difflib
 import logging
 import pathlib
@@ -66,6 +67,8 @@ class AssetsConfig:
 class DataConfig:
     # LeRobot repo id. If None, fake data will be created.
     repo_id: str | None = None
+    # Optional local directory to load the dataset from (bypasses HuggingFace).
+    local_data_root: str | None = None
     # Directory within the assets directory containing the data assets.
     asset_id: str | None = None
     # Contains precomputed normalization stats. If None, normalization will not be performed.
@@ -375,6 +378,8 @@ class LeRobotPiperDataConfig(DataConfigFactory):
     # 如果数据中的 actions 是绝对关节位姿 (采集时即如此)，需要对关节做 delta 转换。
     # Piper 采集默认记录绝对位姿，所以需要打开此开关。
     use_delta_joint_actions: bool = True
+    # 本地数据集路径 (如 ./piper_data)，设置后不从 HuggingFace 加载
+    local_data_dir: str | None = None
 
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
@@ -416,6 +421,7 @@ class LeRobotPiperDataConfig(DataConfigFactory):
             repack_transforms=repack_transform,
             data_transforms=data_transforms,
             model_transforms=model_transforms,
+            local_data_root=os.path.abspath(self.local_data_dir) if self.local_data_dir else None,
         )
 
 
@@ -841,6 +847,7 @@ _CONFIGS = [
             assets=AssetsConfig(),  # asset_id 自动取 repo_id
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=True,
+            local_data_dir="./piper_data",  # 本地数据集路径
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=64,
@@ -863,10 +870,11 @@ _CONFIGS = [
             action_horizon=10,
         ),
         data=LeRobotPiperDataConfig(
-            repo_id="your_hf_username/piper_data",  # ← 改成你的 LeRobot 数据集名称
-            assets=AssetsConfig(),  # asset_id 自动取 repo_id
+            repo_id="piper_data",  # ← 改成你的 LeRobot 数据集名称
+            assets=AssetsConfig(),
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=True,
+            local_data_dir="./piper_data",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         batch_size=64,
