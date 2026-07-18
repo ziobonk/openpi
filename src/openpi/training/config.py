@@ -835,8 +835,8 @@ _CONFIGS = [
             discrete_state_input=False,  # Piper 状态是连续值，非离散 token
         ),
         data=LeRobotPiperDataConfig(
-            repo_id="your_hf_username/piper_data",  # ← 改成你的 LeRobot 数据集名称
-            assets=AssetsConfig(asset_id="piper"),
+            repo_id="piper_data",  # ← 改成你的 LeRobot 数据集名称
+            assets=AssetsConfig(),  # asset_id 自动取 repo_id
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=True,
         ),
@@ -862,7 +862,7 @@ _CONFIGS = [
         ),
         data=LeRobotPiperDataConfig(
             repo_id="your_hf_username/piper_data",  # ← 改成你的 LeRobot 数据集名称
-            assets=AssetsConfig(asset_id="piper"),
+            assets=AssetsConfig(),  # asset_id 自动取 repo_id
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=True,
         ),
