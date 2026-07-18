@@ -880,6 +880,9 @@ _CONFIGS = [
             use_delta_joint_actions=True,
             local_data_dir="./piper_data",
         ),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora"
+        ).get_freeze_filter(),  # 仅训练 LoRA 层，基座冻结
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=8,  # 按显存调整: 24GB→8, 48GB→16, 80GB→32
         lr_schedule=_optimizer.CosineDecaySchedule(
