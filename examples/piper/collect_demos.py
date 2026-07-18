@@ -9,7 +9,11 @@ Piper 机械臂数据采集脚本。
     # 基础用法（无相机）
     python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task
 
-    # 带相机
+    # RealSense D435i/D405 相机
+    python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
+        --rs2_base 128422272318 --rs2_wrist 218722271368
+
+    # OpenCV webcam 回退
     python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
         --cam_ids 0 2
 
@@ -41,13 +45,8 @@ from typing import Optional
 
 import numpy as np
 
-# --- 可选: OpenCV 相机支持 ---
-try:
-    import cv2
-
-    HAS_CV2 = True
-except ImportError:
-    HAS_CV2 = False
+# --- 相机工具 (支持 RealSense D435i/D405 和 OpenCV) ---
+from camera_utils import RealSenseCameras, OpenCVCameras, create_cameras
 
 
 # ---------------------------------------------------------------------------
@@ -57,8 +56,11 @@ except ImportError:
 #   cd piper_sdk && pip install .
 # 或将 piper_sdk 目录加入 sys.path:
 PIPER_SDK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "piper_sdk")
+PIPER_EXAMPLES_PATH = os.path.dirname(__file__)
 if PIPER_SDK_PATH not in sys.path:
     sys.path.insert(0, PIPER_SDK_PATH)
+if PIPER_EXAMPLES_PATH not in sys.path:
+    sys.path.insert(0, PIPER_EXAMPLES_PATH)
 
 try:
     from piper_sdk import C_PiperInterface_V2  # type: ignore[import-untyped]
@@ -88,97 +90,8 @@ GRIPPER_RAW_TO_M = 1e-6
 # 采集频率 (Hz)
 COLLECT_FPS = 50
 # 默认图像分辨率
+# 默认图像分辨率
 DEFAULT_IMAGE_SIZE = (224, 224)
-
-
-# ============================================================================
-# 相机辅助类
-# ============================================================================
-
-@dataclasses.dataclass
-class CameraConfig:
-    """单个相机的配置。"""
-    cam_id: int  # OpenCV 相机设备 ID
-    name: str  # 在数据集中使用的名字 (如 "image", "wrist_image")
-    size: tuple[int, int] = DEFAULT_IMAGE_SIZE  # (width, height)
-
-
-class CameraCapture:
-    """多相机帧抓取器（线程驱动）。"""
-
-    def __init__(self, cameras: list[CameraConfig]):
-        """
-        Args:
-            cameras: 要打开的相机列表。空列表表示不使用相机。
-        """
-        if not HAS_CV2:
-            raise ImportError("需要 opencv-python 来使用相机: pip install opencv-python")
-
-        self._caps: dict[str, cv2.VideoCapture] = {}
-        self._names: dict[str, str] = {}  # name → name
-        self._latest: dict[str, np.ndarray] = {}
-        self._lock = threading.Lock()
-        self._running = False
-        self._thread: Optional[threading.Thread] = None
-
-        for cfg in cameras:
-            cap = cv2.VideoCapture(cfg.cam_id)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, cfg.size[0])
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, cfg.size[1])
-            cap.set(cv2.CAP_PROP_FPS, 30)
-            self._caps[cfg.name] = cap
-            self._names[cfg.name] = cfg.name
-            self._latest[cfg.name] = np.zeros((cfg.size[1], cfg.size[0], 3), dtype=np.uint8)
-
-    def start(self):
-        if not self._caps:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._grab_loop, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=2.0)
-        for cap in self._caps.values():
-            cap.release()
-
-    def _grab_loop(self):
-        while self._running:
-            for name, cap in self._caps.items():
-                ret, frame = cap.read()
-                if ret:
-                    # OpenCV 返回 BGR，转 RGB
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    h, w = frame.shape[:2]
-                    target_w, target_h = DEFAULT_IMAGE_SIZE
-                    if (w, h) != (target_w, target_h):
-                        frame = _resize_image(frame, target_w, target_h)
-                    with self._lock:
-                        self._latest[name] = frame
-            time.sleep(0.005)
-
-    def get(self, name: str) -> np.ndarray:
-        """获取最近一帧。"""
-        with self._lock:
-            return self._latest.get(name, self._latest.get(list(self._latest.keys())[0]) if self._latest else None)
-
-
-def _resize_image(img: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
-    """缩放并居中填充，保持宽高比。返回 (H, W, 3) uint8。"""
-    import cv2
-
-    h, w = img.shape[:2]
-    scale = min(target_w / w, target_h / h)
-    new_w, new_h = int(w * scale), int(h * scale)
-    resized = cv2.resize(img, (new_w, new_h), interpolation=cv2.INTER_AREA)
-
-    pad_w = (target_w - new_w) // 2
-    pad_h = (target_h - new_h) // 2
-    padded = np.zeros((target_h, target_w, 3), dtype=np.uint8)
-    padded[pad_h : pad_h + new_h, pad_w : pad_w + new_w] = resized
-    return padded
 
 
 # ============================================================================
@@ -312,8 +225,12 @@ class CollectConfig:
     can_name: str = "can0"
     # 采集频率
     fps: int = COLLECT_FPS
-    # 相机配置列表。空列表 = 无相机
-    cameras: list[CameraConfig] = dataclasses.field(default_factory=list)
+    # RealSense 相机序列号 (D435i 基座, D405 腕部)
+    rs2_base_serial: Optional[str] = None
+    rs2_wrist_serial: Optional[str] = None
+    # OpenCV 相机设备 ID 回退 (base, wrist)
+    cv_base_id: Optional[int] = None
+    cv_wrist_id: Optional[int] = None
     # 是否在采集完成后推送到 HuggingFace Hub
     push_to_hub: bool = False
     # LeRobot 数据集根目录。None 则使用默认路径 (~/.cache/huggingface/lerobot)
@@ -333,13 +250,15 @@ class DemoCollector:
         self._config = config
         self._robot = PiperRobot(config.can_name)
 
-        # 初始化相机
-        self._camera: Optional[CameraCapture] = None
-        if config.cameras and HAS_CV2:
-            self._camera = CameraCapture(config.cameras)
-        elif config.cameras and not HAS_CV2:
-            print("[WARNING] 配置了相机但未安装 opencv-python，将跳过相机。")
-            print("  安装: pip install opencv-python")
+        # 初始化相机 (优先 RealSense，回退 OpenCV)
+        self._camera = create_cameras(
+            base_serial=config.rs2_base_serial,
+            wrist_serial=config.rs2_wrist_serial,
+            base_cv_id=config.cv_base_id,
+            wrist_cv_id=config.cv_wrist_id,
+        )
+        self._has_base_cam = bool(config.rs2_base_serial or config.cv_base_id is not None)
+        self._has_wrist_cam = bool(config.rs2_wrist_serial or config.cv_wrist_id is not None)
 
         # 输入队列（用于跨线程传递键盘输入）
         self._input_queue: queue.Queue[str] = queue.Queue()
@@ -449,11 +368,10 @@ class DemoCollector:
 
         # 图像
         if self._camera:
-            for cam in self._config.cameras:
-                img = self._camera.get(cam.name)
-                frame[cam.name] = img.copy() if img is not None else np.zeros(
-                    (cam.size[1], cam.size[0], 3), dtype=np.uint8
-                )
+            if self._has_base_cam:
+                frame["image"] = self._camera.get_base()
+            if self._has_wrist_cam:
+                frame["wrist_image"] = self._camera.get_wrist()
 
         self._dataset.add_frame(frame)
 
@@ -489,10 +407,16 @@ class DemoCollector:
             },
         }
 
-        for cam in self._config.cameras:
-            features[cam.name] = {
+        if self._has_base_cam:
+            features["image"] = {
                 "dtype": "image",
-                "shape": (cam.size[1], cam.size[0], 3),
+                "shape": (DEFAULT_IMAGE_SIZE[1], DEFAULT_IMAGE_SIZE[0], 3),
+                "names": ["height", "width", "channel"],
+            }
+        if self._has_wrist_cam:
+            features["wrist_image"] = {
+                "dtype": "image",
+                "shape": (DEFAULT_IMAGE_SIZE[1], DEFAULT_IMAGE_SIZE[0], 3),
                 "names": ["height", "width", "channel"],
             }
 
@@ -588,11 +512,10 @@ class TeachModeCollector(DemoCollector):
         frame["task"] = task
 
         if self._camera:
-            for cam in self._config.cameras:
-                img = self._camera.get(cam.name)
-                frame[cam.name] = img.copy() if img is not None else np.zeros(
-                    (cam.size[1], cam.size[0], 3), dtype=np.uint8
-                )
+            if self._has_base_cam:
+                frame["image"] = self._camera.get_base()
+            if self._has_wrist_cam:
+                frame["wrist_image"] = self._camera.get_wrist()
 
         self._dataset.add_frame(frame)
 
@@ -614,11 +537,21 @@ def _parse_args() -> CollectConfig:
     p.add_argument("--can_name", default="can0", help="CAN 端口名称 (默认: can0)")
     p.add_argument("--fps", type=int, default=COLLECT_FPS, help=f"采集频率 (默认: {COLLECT_FPS})")
     p.add_argument(
+        "--rs2_base",
+        default=None,
+        help="D435i 基座/外部相机序列号。先运行 'python camera_utils.py --list' 查看",
+    )
+    p.add_argument(
+        "--rs2_wrist",
+        default=None,
+        help="D405 腕部相机序列号。先运行 'python camera_utils.py --list' 查看",
+    )
+    p.add_argument(
         "--cam_ids",
         type=int,
         nargs="*",
         default=[],
-        help="OpenCV 相机设备 ID 列表。第一个为基座相机(image)，第二个为腕部相机(wrist_image)。如: --cam_ids 0 2",
+        help="OpenCV 相机设备 ID 回退。第一个=基座，第二个=腕部。如: --cam_ids 0 2",
     )
     p.add_argument("--push_to_hub", action="store_true", help="采集完成后推送到 HuggingFace Hub")
     p.add_argument("--root", default=None, help="LeRobot 数据集根目录 (默认: ~/.cache/huggingface/lerobot)")
@@ -629,17 +562,14 @@ def _parse_args() -> CollectConfig:
     )
     args = p.parse_args()
 
-    cameras = []
-    cam_names = ["image", "wrist_image"]
-    for i, cam_id in enumerate(args.cam_ids):
-        name = cam_names[i] if i < len(cam_names) else f"camera_{i}"
-        cameras.append(CameraConfig(cam_id=cam_id, name=name))
-
     return CollectConfig(
         repo_id=args.repo_id,
         can_name=args.can_name,
         fps=args.fps,
-        cameras=cameras,
+        rs2_base_serial=args.rs2_base,
+        rs2_wrist_serial=args.rs2_wrist,
+        cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
+        cv_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
         push_to_hub=args.push_to_hub,
         root=args.root,
     )

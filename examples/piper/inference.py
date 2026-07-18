@@ -14,7 +14,11 @@ Piper 机械臂推理脚本 — 通过策略服务器控制机械臂。
     # 在机器人端运行推理
     python examples/piper/inference.py --host <GPU_SERVER_IP> --port 8000
 
-    # 带相机
+    # RealSense D435i/D405 相机
+    python examples/piper/inference.py --host <GPU_SERVER_IP> --port 8000 \
+        --rs2_base 128422272318 --rs2_wrist 218722271368
+
+    # OpenCV webcam 回退
     python examples/piper/inference.py --host 192.168.1.100 --port 8000 \
         --cam_ids 0 2
 
@@ -54,8 +58,11 @@ import numpy as np
 
 # --- Piper SDK ---
 PIPER_SDK_PATH = os.path.join(os.path.dirname(__file__), "..", "..", "piper_sdk")
+PIPER_EXAMPLES_PATH = os.path.dirname(__file__)
 if PIPER_SDK_PATH not in sys.path:
     sys.path.insert(0, PIPER_SDK_PATH)
+if PIPER_EXAMPLES_PATH not in sys.path:
+    sys.path.insert(0, PIPER_EXAMPLES_PATH)
 
 try:
     from piper_sdk import C_PiperInterface_V2  # type: ignore[import-untyped]
@@ -73,13 +80,8 @@ except ImportError:
     print("  cd packages/openpi-client && pip install -e .")
     sys.exit(1)
 
-# --- 相机 ---
-try:
-    import cv2
-
-    HAS_CV2 = True
-except ImportError:
-    HAS_CV2 = False
+# --- 相机工具 (支持 RealSense D435i/D405 和 OpenCV) ---
+from camera_utils import create_cameras
 
 
 # ===========================================================================
@@ -112,91 +114,6 @@ JOINT_LIMITS_RAD = np.array(
         [-2.8, 2.8],  # J6
     ]
 )
-
-
-# ===========================================================================
-# 相机工具
-# ===========================================================================
-
-class CameraCapture:
-    """轻量多相机抓取器（线程驱动）。"""
-
-    def __init__(self, cam_ids: list[int]):
-        if not HAS_CV2:
-            raise ImportError("需要 opencv-python: pip install opencv-python")
-        self._caps = {}
-        self._latest = {}
-        self._lock = threading.Lock()
-        self._running = False
-        self._thread = None
-
-        for i, cid in enumerate(cam_ids):
-            cap = cv2.VideoCapture(cid)
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, IMAGE_SIZE[0])
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, IMAGE_SIZE[1])
-            cap.set(cv2.CAP_PROP_FPS, 30)
-            name = "image" if i == 0 else f"wrist_image" if i == 1 else f"cam_{i}"
-            self._caps[name] = cap
-            self._latest[name] = np.zeros((IMAGE_SIZE[1], IMAGE_SIZE[0], 3), dtype=np.uint8)
-
-        # 如果只有一个相机，复制为 "image" 和 "wrist_image"
-        if len(self._caps) == 1:
-            only_key = list(self._caps.keys())[0]
-            self._caps["wrist_image"] = self._caps[only_key]  # 共享同一个 capture
-
-    def start(self):
-        if not self._caps:
-            return
-        self._running = True
-        self._thread = threading.Thread(target=self._loop, daemon=True)
-        self._thread.start()
-
-    def stop(self):
-        self._running = False
-        if self._thread:
-            self._thread.join(timeout=2.0)
-        seen = set()
-        for cap in self._caps.values():
-            if id(cap) not in seen:
-                seen.add(id(cap))
-                cap.release()
-
-    def _loop(self):
-        while self._running:
-            seen = set()
-            for name, cap in self._caps.items():
-                cid = id(cap)
-                if cid in seen:
-                    continue  # 同一个设备只读一次
-                seen.add(cid)
-                ret, frame = cap.read()
-                if ret:
-                    frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    frame = _resize_pad(frame, *IMAGE_SIZE)
-                    # 共享相机的所有名称都更新同一帧
-                    for n, c in self._caps.items():
-                        if id(c) == cid:
-                            with self._lock:
-                                self._latest[n] = frame.copy()
-            time.sleep(0.005)
-
-    def get(self, name: str) -> np.ndarray:
-        with self._lock:
-            return self._latest.get(name, np.zeros((IMAGE_SIZE[1], IMAGE_SIZE[0], 3), dtype=np.uint8))
-
-
-def _resize_pad(img: np.ndarray, target_w: int, target_h: int) -> np.ndarray:
-    """缩放并居中填充，保持宽高比。"""
-    import cv2
-
-    h, w = img.shape[:2]
-    scale = min(target_w / w, target_h / h)
-    nw, nh = int(w * scale), int(h * scale)
-    resized = cv2.resize(img, (nw, nh), interpolation=cv2.INTER_AREA)
-    pw, ph = (target_w - nw) // 2, (target_h - nh) // 2
-    padded = np.zeros((target_h, target_w, 3), dtype=np.uint8)
-    padded[ph : ph + nh, pw : pw + nw] = resized
-    return padded
 
 
 # ===========================================================================
@@ -315,7 +232,10 @@ class PiperInference:
         host: str = "localhost",
         port: int = 8000,
         can_name: str = "can0",
-        cam_ids: Optional[list[int]] = None,
+        rs2_base_serial: Optional[str] = None,
+        rs2_wrist_serial: Optional[str] = None,
+        cv_base_id: Optional[int] = None,
+        cv_wrist_id: Optional[int] = None,
         action_horizon: int = DEFAULT_ACTION_HORIZON,
         exec_horizon: int = DEFAULT_EXEC_HORIZON,
         default_prompt: str = "do something",
@@ -333,10 +253,15 @@ class PiperInference:
         self._policy_host = host
         self._policy_port = port
 
-        # 相机
-        self._camera: Optional[CameraCapture] = None
-        if cam_ids:
-            self._camera = CameraCapture(cam_ids)
+        # 相机 (优先 RealSense，回退 OpenCV)
+        self._camera = create_cameras(
+            base_serial=rs2_base_serial,
+            wrist_serial=rs2_wrist_serial,
+            base_cv_id=cv_base_id,
+            wrist_cv_id=cv_wrist_id,
+        )
+        self._has_base_cam = bool(rs2_base_serial or cv_base_id is not None)
+        self._has_wrist_cam = bool(rs2_wrist_serial or cv_wrist_id is not None)
 
         # 状态
         self._input_queue: queue.Queue[str] = queue.Queue()
@@ -479,8 +404,10 @@ class PiperInference:
         base_image = np.zeros((IMAGE_SIZE[1], IMAGE_SIZE[0], 3), dtype=np.uint8)
         wrist_image = base_image.copy()
         if self._camera:
-            base_image = self._camera.get("image")
-            wrist_image = self._camera.get("wrist_image")
+            if self._has_base_cam:
+                base_image = self._camera.get_base()
+            if self._has_wrist_cam:
+                wrist_image = self._camera.get_wrist()
 
         # Prompt
         if self._interactive:
@@ -574,7 +501,13 @@ def _parse_args():
     p.add_argument("--port", type=int, default=8000, help="策略服务器端口 (默认: 8000)")
     p.add_argument("--can_name", default="can0", help="CAN 端口名称 (默认: can0)")
     p.add_argument(
-        "--cam_ids", type=int, nargs="*", default=[], help="相机设备 ID, 如 --cam_ids 0 2"
+        "--rs2_base", default=None, help="D435i 基座相机序列号。先运行 'python camera_utils.py --list' 查看"
+    )
+    p.add_argument(
+        "--rs2_wrist", default=None, help="D405 腕部相机序列号。先运行 'python camera_utils.py --list' 查看"
+    )
+    p.add_argument(
+        "--cam_ids", type=int, nargs="*", default=[], help="OpenCV 设备 ID 回退。第一个=基座，第二个=腕部"
     )
     p.add_argument(
         "--action_horizon",
@@ -608,7 +541,10 @@ def main():
         host=args.host,
         port=args.port,
         can_name=args.can_name,
-        cam_ids=args.cam_ids if args.cam_ids else None,
+        rs2_base_serial=args.rs2_base,
+        rs2_wrist_serial=args.rs2_wrist,
+        cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
+        cv_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
         action_horizon=args.action_horizon,
         exec_horizon=args.exec_horizon,
         default_prompt=args.prompt,
