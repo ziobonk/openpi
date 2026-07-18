@@ -379,7 +379,8 @@ class LeRobotPiperDataConfig(DataConfigFactory):
     @override
     def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
         # repack: 将 LeRobot dataset 的 key 映射为推理时的 key
-        # 注意: prompt (task) 通过 prompt_from_task=True 自动注入，不需要在 repack 中映射
+        # 注意: RepackTransform 只保留映射中列出的 key，其他全部丢弃！
+        # prompt 由 PromptFromLeRobotTask 注入，必须在此显式保留
         repack_transform = _transforms.Group(
             inputs=[
                 _transforms.RepackTransform(
@@ -388,6 +389,7 @@ class LeRobotPiperDataConfig(DataConfigFactory):
                         "observation/wrist_image": "wrist_image",
                         "observation/state": "state",
                         "actions": "actions",
+                        "prompt": "prompt",
                     }
                 )
             ]
