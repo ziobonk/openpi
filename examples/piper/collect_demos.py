@@ -442,27 +442,30 @@ class DemoCollector:
 
         # 确定 root 和 repo_id
         if self._config.data_dir:
-            # 本地模式: 直接用 --data_dir 作为保存路径
+            # 本地模式: LeRobot.create(root=...) 直接把 root 作为数据保存目录
             data_path = os.path.abspath(self._config.data_dir)
-            # LeRobot.create() 会将数据保存到 root/repo_id，
-            # 所以我们把 data_path 的父目录作为 root，最后一段作为 repo_id
-            root = str(os.path.dirname(data_path))
+            root = data_path
             repo_id = os.path.basename(data_path)
             dataset_label = data_path
+            # 需要先清理已存在的目录，否则 LeRobot.create 会报 FileExistsError
+            if os.path.exists(data_path):
+                resp = input(f"[WARNING] 数据集 {dataset_label} 已存在。覆盖? [y/N]: ")
+                if resp.lower() == "y":
+                    shutil.rmtree(data_path)
+                else:
+                    print("[INFO] 将在已有数据集中追加 episode。")
         else:
             # HF 模式
             root = None  # LeRobot 用默认 HF_LEROBOT_HOME
             repo_id = self._config.repo_id
             dataset_label = repo_id
-
-        # 清理旧数据（如果需要覆盖）
-        output_path = os.path.join(root or HF_LEROBOT_HOME, repo_id)
-        if os.path.exists(output_path):
-            resp = input(f"[WARNING] 数据集 {dataset_label} 已存在。覆盖? [y/N]: ")
-            if resp.lower() == "y":
-                shutil.rmtree(output_path)
-            else:
-                print("[INFO] 将在已有数据集中追加 episode。")
+            output_path = os.path.join(HF_LEROBOT_HOME, repo_id)
+            if os.path.exists(output_path):
+                resp = input(f"[WARNING] 数据集 {dataset_label} 已存在。覆盖? [y/N]: ")
+                if resp.lower() == "y":
+                    shutil.rmtree(output_path)
+                else:
+                    print("[INFO] 将在已有数据集中追加 episode。")
 
         self._dataset = LeRobotDataset.create(
             repo_id=repo_id,
@@ -476,7 +479,7 @@ class DemoCollector:
         )
 
         # 打印保存路径
-        actual_path = os.path.join(root or HF_LEROBOT_HOME, repo_id)
+        actual_path = root if root else os.path.join(HF_LEROBOT_HOME, repo_id)
         print(f"[Dataset] 数据集已初始化: {actual_path}")
 
     # ======================== 清理 ========================
