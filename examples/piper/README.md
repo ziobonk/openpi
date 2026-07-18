@@ -145,9 +145,15 @@ task     str             →    task               →    prompt_from_task=True 
 ## 第一步：采集数据
 
 ```bash
-python examples/piper/collect_demos.py \
-    --repo_id your_hf_username/piper_data \
-    --cam_ids 0 2
+# 本地模式 (推荐 — 不依赖 HuggingFace)
+python examples/piper/collect_demos.py --data_dir ./piper_data
+
+# 带相机
+python examples/piper/collect_demos.py --data_dir ./piper_data \
+    --rs2_base 128422272318 --rs2_wrist 218722271368
+
+# HF 模式 (需要联网，用于推送到 Hub 或从 Hub 加载)
+python examples/piper/collect_demos.py --repo_id your_hf_username/piper_data
 ```
 
 **操作流程：**
@@ -159,13 +165,38 @@ python examples/piper/collect_demos.py \
 
 **建议：** ≥ 50 个 episode，每个 ≥ 100 帧。数据越多、多样性越高，模型效果越好。
 
-数据保存到 `~/.cache/huggingface/lerobot/<repo_id>/`。
+**数据保存位置：**
+- 本地模式：`--data_dir` 指定的目录（如 `./piper_data/`）
+- HF 模式：`~/.cache/huggingface/lerobot/<repo_id>/`
 
 ---
 
 ## 第二步：修改配置
 
-`src/openpi/training/config.py` 中已预设 `pi05_piper` 和 `pi0_piper`，只需把 `repo_id` 改成你的：
+`src/openpi/training/config.py` 中已预设 `pi05_piper` 和 `pi0_piper`。
+
+**本地数据模式：** 将 `repo_id` 改为数据目录名，训练时设置 `HF_LEROBOT_HOME`:
+
+```python
+# 如果数据在 /home/user/piper_data/
+TrainConfig(
+    name="pi05_piper",
+    ...
+    data=LeRobotPiperDataConfig(
+        repo_id="piper_data",  # ← 目录名 (不是完整路径)
+        ...
+    ),
+    ...
+),
+```
+
+```bash
+# 训练时指定数据父目录
+export HF_LEROBOT_HOME=/home/user
+uv run scripts/train.py pi05_piper --exp-name=piper_exp1 --overwrite
+```
+
+**HF 模式：** 
 
 ```python
 TrainConfig(

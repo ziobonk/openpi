@@ -6,18 +6,21 @@ Piper 机械臂数据采集脚本。
 保存为 LeRobot 格式，用于后续 fine-tune openpi 模型。
 
 用法:
-    # 基础用法（无相机）
+    # 保存到本地目录 (推荐)
+    python examples/piper/collect_demos.py --data_dir ./piper_data
+
+    # HuggingFace 模式 (需要联网)
     python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task
 
     # RealSense D435i/D405 相机
-    python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
+    python examples/piper/collect_demos.py --data_dir ./piper_data \
         --rs2_base 128422272318 --rs2_wrist 218722271368
 
     # OpenCV webcam 回退
-    python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
+    python examples/piper/collect_demos.py --data_dir ./piper_data \
         --cam_ids 0 2
 
-    # 推送到 HuggingFace Hub
+    # 推送到 HuggingFace Hub (需 --repo_id)
     python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
         --push_to_hub
 
@@ -217,10 +220,17 @@ class PiperRobot:
 
 @dataclasses.dataclass(frozen=True)
 class CollectConfig:
-    """数据采集配置。"""
+    """数据采集配置。
 
-    # LeRobot 数据集路径 / HF repo_id
-    repo_id: str
+    两种模式:
+      - 本地模式: 指定 data_dir，数据保存到本地任意目录
+      - HF 模式: 指定 repo_id，数据保存到 HF_LEROBOT_HOME 下
+    """
+
+    # 本地保存目录 (如 ./piper_data)。与 repo_id 二选一至少指定一个。
+    data_dir: Optional[str] = None
+    # LeRobot 数据集名称 (HF 模式, 如 your_hf_username/piper_data)
+    repo_id: Optional[str] = None
     # CAN 端口名称
     can_name: str = "can0"
     # 采集频率
@@ -231,10 +241,8 @@ class CollectConfig:
     # OpenCV 相机设备 ID 回退 (base, wrist)
     cv_base_id: Optional[int] = None
     cv_wrist_id: Optional[int] = None
-    # 是否在采集完成后推送到 HuggingFace Hub
+    # 是否在采集完成后推送到 HuggingFace Hub (仅在 HF 模式下有效)
     push_to_hub: bool = False
-    # LeRobot 数据集根目录。None 则使用默认路径 (~/.cache/huggingface/lerobot)
-    root: Optional[str] = None
 
 
 class DemoCollector:
@@ -288,7 +296,12 @@ class DemoCollector:
         # 启动相机
         if self._camera:
             self._camera.start()
-            print(f"[Camera] 已启动 {len(self._config.cameras)} 个相机")
+            cam_list = []
+            if self._has_base_cam:
+                cam_list.append("base(D435i)" if self._config.rs2_base_serial else "base(CV)")
+            if self._has_wrist_cam:
+                cam_list.append("wrist(D405)" if self._config.rs2_wrist_serial else "wrist(CV)")
+            print(f"[Camera] 已启动: {', '.join(cam_list)}")
 
         # 初始化 LeRobot 数据集
         self._init_dataset()
@@ -384,7 +397,12 @@ class DemoCollector:
     # ======================== 数据集初始化 ========================
 
     def _init_dataset(self):
-        """创建或打开 LeRobot 数据集。"""
+        """创建或打开 LeRobot 数据集。
+
+        支持两种模式:
+          - 本地模式 (data_dir): 直接保存到指定目录，不经过 HuggingFace
+          - HF 模式 (repo_id): 使用 HF_LEROBOT_HOME 默认路径
+        """
         # 构建 features 描述
         features: dict = {
             "state": {
@@ -420,26 +438,44 @@ class DemoCollector:
                 "names": ["height", "width", "channel"],
             }
 
+        # 确定 root 和 repo_id
+        if self._config.data_dir:
+            # 本地模式: 直接用 --data_dir 作为保存路径
+            data_path = os.path.abspath(self._config.data_dir)
+            # LeRobot.create() 会将数据保存到 root/repo_id，
+            # 所以我们把 data_path 的父目录作为 root，最后一段作为 repo_id
+            root = str(os.path.dirname(data_path))
+            repo_id = os.path.basename(data_path)
+            dataset_label = data_path
+        else:
+            # HF 模式
+            root = None  # LeRobot 用默认 HF_LEROBOT_HOME
+            repo_id = self._config.repo_id
+            dataset_label = repo_id
+
         # 清理旧数据（如果需要覆盖）
-        output_path = self._config.root or (HF_LEROBOT_HOME / self._config.repo_id)
-        if os.path.exists(str(output_path)):
-            resp = input(f"[WARNING] 数据集 {self._config.repo_id} 已存在。覆盖? [y/N]: ")
+        output_path = os.path.join(root or HF_LEROBOT_HOME, repo_id)
+        if os.path.exists(output_path):
+            resp = input(f"[WARNING] 数据集 {dataset_label} 已存在。覆盖? [y/N]: ")
             if resp.lower() == "y":
-                shutil.rmtree(str(output_path))
+                shutil.rmtree(output_path)
             else:
                 print("[INFO] 将在已有数据集中追加 episode。")
 
         self._dataset = LeRobotDataset.create(
-            repo_id=self._config.repo_id,
+            repo_id=repo_id,
             fps=self._config.fps,
-            root=self._config.root,
+            root=root,
             robot_type="piper",
             features=features,
             use_videos=False,  # 直接存图片，不生成视频
             image_writer_threads=4,
             image_writer_processes=2,
         )
-        print(f"[Dataset] 数据集已初始化: {self._config.repo_id}")
+
+        # 打印保存路径
+        actual_path = os.path.join(root or HF_LEROBOT_HOME, repo_id)
+        print(f"[Dataset] 数据集已初始化: {actual_path}")
 
     # ======================== 清理 ========================
 
@@ -450,8 +486,8 @@ class DemoCollector:
             self._camera.stop()
         self._robot.disable()
 
-        # 推送到 Hub
-        if self._config.push_to_hub and self._dataset:
+        # 推送到 Hub (仅 HF 模式)
+        if self._config.push_to_hub and self._config.repo_id and self._dataset:
             print("[Hub] 正在推送到 HuggingFace Hub...")
             self._dataset.push_to_hub(
                 tags=["piper", "robot", "manipulation"],
@@ -533,7 +569,8 @@ def _parse_args() -> CollectConfig:
     import argparse
 
     p = argparse.ArgumentParser(description="Piper 机械臂数据采集脚本")
-    p.add_argument("--repo_id", required=True, help="LeRobot 数据集名称 (如 your_hf_username/piper_data)")
+    p.add_argument("--data_dir", default=None, help="本地保存目录 (如 ./piper_data)。与 --repo_id 二选一")
+    p.add_argument("--repo_id", default=None, help="HF 数据集名称 (如 your_hf_username/piper_data)。与 --data_dir 二选一")
     p.add_argument("--can_name", default="can0", help="CAN 端口名称 (默认: can0)")
     p.add_argument("--fps", type=int, default=COLLECT_FPS, help=f"采集频率 (默认: {COLLECT_FPS})")
     p.add_argument(
@@ -553,8 +590,7 @@ def _parse_args() -> CollectConfig:
         default=[],
         help="OpenCV 相机设备 ID 回退。第一个=基座，第二个=腕部。如: --cam_ids 0 2",
     )
-    p.add_argument("--push_to_hub", action="store_true", help="采集完成后推送到 HuggingFace Hub")
-    p.add_argument("--root", default=None, help="LeRobot 数据集根目录 (默认: ~/.cache/huggingface/lerobot)")
+    p.add_argument("--push_to_hub", action="store_true", help="采集完成后推送到 HuggingFace Hub (需 --repo_id)")
     p.add_argument(
         "--teach_mode",
         action="store_true",
@@ -562,7 +598,16 @@ def _parse_args() -> CollectConfig:
     )
     args = p.parse_args()
 
+    # 校验: --data_dir 和 --repo_id 至少指定一个
+    if not args.data_dir and not args.repo_id:
+        p.error("必须指定 --data_dir 或 --repo_id 之一")
+
+    # 推送到 Hub 只在 HF 模式下有效
+    if args.push_to_hub and not args.repo_id:
+        p.error("--push_to_hub 需要同时指定 --repo_id")
+
     return CollectConfig(
+        data_dir=args.data_dir,
         repo_id=args.repo_id,
         can_name=args.can_name,
         fps=args.fps,
@@ -571,7 +616,6 @@ def _parse_args() -> CollectConfig:
         cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
         cv_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
         push_to_hub=args.push_to_hub,
-        root=args.root,
     )
 
 
