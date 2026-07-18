@@ -52,16 +52,18 @@ from typing import Optional
 
 import numpy as np
 
+# --- OpenCV (JPEG 编码 + 预览) ---
+try:
+    import cv2
+except ImportError:
+    cv2 = None
+
 # --- 相机工具 (支持 RealSense D435i/D405 和 OpenCV) ---
 from camera_utils import RealSenseCameras, OpenCVCameras, create_cameras
 
-# --- OpenCV (用于预览窗口) ---
-try:
-    import cv2
-
-    HAS_CV2 = True
-except ImportError:
-    HAS_CV2 = False
+# --- MJPEG 预览服务器 ---
+import http.server
+import socketserver
 
 
 # ---------------------------------------------------------------------------
@@ -291,8 +293,11 @@ class DemoCollector:
         # LeRobot 数据集（延迟创建，因为需要先确认 features）
         self._dataset: Optional[LeRobotDataset] = None
 
-        # 预览窗口
-        self._preview_active = HAS_CV2 and self._camera is not None and not config.no_preview
+        # 预览窗口 (MJPEG HTTP 服务器, 需要 cv2.imencode)
+        self._preview_active = cv2 is not None and self._camera is not None and not config.no_preview
+        self._preview_server: Optional[socketserver.TCPServer] = None
+        self._preview_frame: Optional[bytes] = None  # 最新的 MJPEG 帧
+        self._preview_lock = threading.Lock()
 
         # 运行状态
         self._running = False
@@ -511,9 +516,10 @@ class DemoCollector:
         self._running = False
         if self._camera:
             self._camera.stop()
-        # 关闭预览窗口
-        if self._preview_active:
-            cv2.destroyAllWindows()
+        # 关闭预览服务器
+        if self._preview_server:
+            self._preview_server.shutdown()
+            self._preview_server = None
 
         # 推送到 Hub (仅 HF 模式)
         if self._config.push_to_hub and self._config.repo_id and self._dataset:
@@ -531,49 +537,80 @@ class DemoCollector:
     # ======================== 相机预览 ========================
 
     def _start_preview(self):
-        """启动相机预览窗口 (后台线程)。"""
+        """启动 MJPEG 预览服务器 (浏览器访问 http://localhost:8765)。"""
 
-        def _preview_loop():
-            cv2.namedWindow("Camera Preview (base | wrist)", cv2.WINDOW_NORMAL)
-            cv2.resizeWindow("Camera Preview (base | wrist)", 896, 448)
-
+        # 帧生成线程
+        def _frame_producer():
             while self._running:
-                base = np.zeros((DEFAULT_IMAGE_SIZE[1], DEFAULT_IMAGE_SIZE[0], 3), dtype=np.uint8)
-                wrist = np.zeros((DEFAULT_IMAGE_SIZE[1], DEFAULT_IMAGE_SIZE[0], 3), dtype=np.uint8)
-                if self._camera:
-                    if self._has_base_cam:
-                        base = self._camera.get_base()
-                    if self._has_wrist_cam:
-                        wrist = self._camera.get_wrist()
-                    elif self._has_base_cam:
-                        wrist = base  # 无腕部相机时复制基座画面
+                try:
+                    base = np.zeros((DEFAULT_IMAGE_SIZE[1], DEFAULT_IMAGE_SIZE[0], 3), dtype=np.uint8)
+                    wrist = np.zeros((DEFAULT_IMAGE_SIZE[1], DEFAULT_IMAGE_SIZE[0], 3), dtype=np.uint8)
+                    if self._camera:
+                        if self._has_base_cam:
+                            base = self._camera.get_base()
+                        if self._has_wrist_cam:
+                            wrist = self._camera.get_wrist()
+                        elif self._has_base_cam:
+                            wrist = base.copy()
 
-                # RGB → BGR for OpenCV, 左右拼接
-                canvas = np.hstack([base[..., ::-1], wrist[..., ::-1]])
-                # 添加标签
-                cv2.putText(canvas, "base (D435i)", (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-                cv2.putText(
-                    canvas,
-                    "wrist (D405)",
-                    (DEFAULT_IMAGE_SIZE[0] + 10, 25),
-                    cv2.FONT_HERSHEY_SIMPLEX,
-                    0.6,
-                    (0, 255, 0),
-                    2,
-                )
+                    canvas = np.hstack([base, wrist])
+                    # JPEG 编码
+                    _, jpeg = cv2.imencode(".jpg", canvas[..., ::-1], [cv2.IMWRITE_JPEG_QUALITY, 70])
+                    with self._preview_lock:
+                        self._preview_frame = jpeg.tobytes()
+                except Exception:
+                    pass
+                time.sleep(0.033)  # ~30fps
 
-                cv2.imshow("Camera Preview (base | wrist)", canvas)
-                # OpenCV 需要 poll 才能刷新窗口，同时捕获按键 (ESC 或 q 退出)
-                key = cv2.waitKey(33) & 0xFF  # ~30fps
-                if key in (27, ord("q")):  # ESC or q
-                    self._input_queue.put("quit")
-                    break
+        producer = threading.Thread(target=_frame_producer, daemon=True)
+        producer.start()
 
-            cv2.destroyAllWindows()
+        # HTTP MJPEG 服务器
+        collector = self
 
-        thread = threading.Thread(target=_preview_loop, daemon=True)
-        thread.start()
-        print("[Preview] 相机预览窗口已打开 (按 ESC 或 q 退出)")
+        class _PreviewHandler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                if self.path == "/":
+                    html = (
+                        "<html><body style='margin:0;background:#111'>"
+                        "<h3 style='color:#0f0;text-align:center;font-family:monospace'>"
+                        "Piper Camera Preview (base | wrist)</h3>"
+                        "<img src='/stream' style='width:100%;max-width:896px;display:block;margin:auto'/>"
+                        "</body></html>"
+                    )
+                    self.send_response(200)
+                    self.send_header("Content-Type", "text/html; charset=utf-8")
+                    self.end_headers()
+                    self.wfile.write(html.encode())
+                elif self.path == "/stream":
+                    self.send_response(200)
+                    self.send_header("Content-Type", "multipart/x-mixed-replace; boundary=--frame")
+                    self.end_headers()
+                    while collector._running:
+                        with collector._preview_lock:
+                            data = collector._preview_frame
+                        if data is not None:
+                            self.wfile.write(b"--frame\r\n")
+                            self.wfile.write(b"Content-Type: image/jpeg\r\n\r\n")
+                            self.wfile.write(data)
+                            self.wfile.write(b"\r\n")
+                        time.sleep(0.033)
+                else:
+                    self.send_error(404)
+
+            def log_message(self, format, *args):
+                pass  # 静音 HTTP 日志
+
+        def _run_server():
+            try:
+                self._preview_server = socketserver.TCPServer(("0.0.0.0", 8765), _PreviewHandler)
+                self._preview_server.serve_forever()
+            except OSError:
+                print("[Preview] 端口 8765 被占用，预览未启动")
+
+        server_thread = threading.Thread(target=_run_server, daemon=True)
+        server_thread.start()
+        print("[Preview] 相机预览: 浏览器打开 http://localhost:8765 (或 Ctrl+C 退出)")
 
     # ======================== 交互工具 ========================
 
