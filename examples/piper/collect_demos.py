@@ -142,17 +142,18 @@ class PiperRobot:
 
     def get_joints_rad(self) -> np.ndarray:
         """读取6个关节角，单位: 弧度。shape = (6,), float32。"""
-        msg = self._piper.GetArmJointMsgs()
+        joint_msg = self._piper.GetArmJointMsgs()
+        js = joint_msg.joint_state  # ArmMsgFeedBackJointStates
         raw = np.array(
-            [msg.joint_1, msg.joint_2, msg.joint_3, msg.joint_4, msg.joint_5, msg.joint_6],
+            [js.joint_1, js.joint_2, js.joint_3, js.joint_4, js.joint_5, js.joint_6],
             dtype=np.float32,
         )
         return raw * DEGREE_RAW_TO_RAD
 
     def get_gripper_raw(self) -> np.ndarray:
         """读取夹爪位置（原始值 0.001mm）。shape = (1,), float32。"""
-        msg = self._piper.GetArmGripperMsgs()
-        return np.array([msg.grippers_angle], dtype=np.float32)
+        gripper_msg = self._piper.GetArmGripperMsgs()
+        return np.array([gripper_msg.gripper_state.grippers_angle], dtype=np.float32)
 
     def get_state(self) -> np.ndarray:
         """读取完整状态: [j1..j6(rad), gripper(raw)]，shape = (7,), float32。"""
