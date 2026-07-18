@@ -838,7 +838,7 @@ _CONFIGS = [
         name="pi05_piper",
         model=pi0_config.Pi0Config(
             pi05=True,
-            action_dim=7,
+            action_dim=32,  # 与基座模型一致，PiperOutputs 截取前 7 维
             action_horizon=10,
             discrete_state_input=False,  # Piper 状态是连续值，非离散 token
         ),
@@ -866,7 +866,7 @@ _CONFIGS = [
     TrainConfig(
         name="pi0_piper",
         model=pi0_config.Pi0Config(
-            action_dim=7,
+            action_dim=32,  # 与基座模型一致，PiperOutputs 截取前 7 维
             action_horizon=10,
         ),
         data=LeRobotPiperDataConfig(
