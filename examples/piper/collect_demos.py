@@ -14,7 +14,7 @@ Piper 机械臂数据采集脚本。
 
     # RealSense D435i/D405 相机
     python examples/piper/collect_demos.py --data_dir ./piper_data \
-        --rs2_base 128422272318 --rs2_wrist 218722271368
+        --rs2_base 231122071797 --rs2_wrist 260322279175
 
     # OpenCV webcam 回退
     python examples/piper/collect_demos.py --data_dir ./piper_data \
@@ -243,6 +243,8 @@ class CollectConfig:
     cv_wrist_id: Optional[int] = None
     # 是否在采集完成后推送到 HuggingFace Hub (仅在 HF 模式下有效)
     push_to_hub: bool = False
+    # 示教模式: 记录从臂位姿作为 state 和 action
+    teach_mode: bool = False
 
 
 class DemoCollector:
@@ -616,6 +618,7 @@ def _parse_args() -> CollectConfig:
         cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
         cv_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
         push_to_hub=args.push_to_hub,
+        teach_mode=args.teach_mode,
     )
 
 
