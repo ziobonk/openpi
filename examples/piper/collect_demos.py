@@ -541,7 +541,12 @@ class DemoCollector:
                 print(f"[Dataset] 已连接: {output_path} (已有 {existing} 个 episode)")
                 return
             except Exception as e:
-                print(f"[WARNING] 加载已有数据集失败 ({e})，重建本地缓存")
+                err = str(e)
+                if "version" in err.lower() or "revision" in err.lower():
+                    print(f"[WARNING] 本地缓存版本不匹配，请指定 --hf_revision 或清缓存重试")
+                    print(f"  错误: {e}")
+                else:
+                    print(f"[WARNING] 加载已有数据集失败 ({e})，重建本地缓存")
                 shutil.rmtree(output_path, ignore_errors=True)
 
         self._dataset = LeRobotDataset.create(
