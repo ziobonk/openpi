@@ -598,30 +598,34 @@ class DemoCollector:
                 api = HfApi()
                 root = self._dataset.root
                 repo_id = self._config.repo_id
-                print(f"[Hub] 后台上传 Episode #{first_ep}~#{last_ep} ({count} 个)...")
 
-                uploaded = []
-                for pf in (root / "data" / "chunk-000").glob("*.parquet"):
+                # 收集要上传的文件
+                files = []
+                for pf in sorted((root / "data" / "chunk-000").glob("*.parquet")):
+                    files.append(("parquet", pf))
+                for mf in sorted((root / "meta").glob("*.json*")):
+                    files.append(("meta", mf))
+
+                print(f"[Hub] 后台上传 Episode #{first_ep}~#{last_ep} ({count} 个, {len(files)} 个文件)...")
+
+                uploaded_parquets = []
+                for i, (kind, f) in enumerate(files, 1):
+                    print(f"  [{i}/{len(files)}] {f.name}")
                     api.upload_file(
-                        path_or_fileobj=str(pf),
-                        path_in_repo=f"data/chunk-000/{pf.name}",
+                        path_or_fileobj=str(f),
+                        path_in_repo=f"data/chunk-000/{f.name}" if kind == "parquet" else f"meta/{f.name}",
                         repo_id=repo_id,
                         repo_type="dataset",
                     )
-                    uploaded.append(pf)
-                for mf in (root / "meta").glob("*.json*"):
-                    api.upload_file(
-                        path_or_fileobj=str(mf),
-                        path_in_repo=f"meta/{mf.name}",
-                        repo_id=repo_id,
-                        repo_type="dataset",
-                    )
+                    if kind == "parquet":
+                        uploaded_parquets.append(f)
+
                 print(f"[Hub] Episode #{first_ep}~#{last_ep} 上传完成")
 
                 # 清理已上传的 parquet（meta 保留给 LeRobot 用）
-                for pf in uploaded:
+                for pf in uploaded_parquets:
                     pf.unlink(missing_ok=True)
-                print(f"[Hub] 已清理 {len(uploaded)} 个本地 parquet 缓存")
+                print(f"[Hub] 已清理 {len(uploaded_parquets)} 个本地 parquet 缓存")
             except Exception as e:
                 print(f"[Hub] 批量上传失败: {e}")
 
