@@ -20,6 +20,9 @@ Piper 机械臂数据采集脚本。
     python examples/piper/collect_demos.py --data_dir ./piper_data \
         --cam_ids 0 2
 
+    # 覆盖已有数据集
+    python examples/piper/collect_demos.py --data_dir ./piper_data --overwrite
+
     # 推送到 HuggingFace Hub (需 --repo_id)
     python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
         --push_to_hub
@@ -43,7 +46,9 @@ Piper 机械臂数据采集脚本。
 
 import dataclasses
 import datetime
+import json
 import os
+from pathlib import Path
 import select
 import shutil
 import sys
@@ -258,6 +263,8 @@ class CollectConfig:
     teach_mode: bool = False
     # 是否关闭相机预览窗口
     no_preview: bool = False
+    # 覆盖已有数据集 (否则默认追加 episode)
+    overwrite: bool = False
 
 
 class DemoCollector:
@@ -476,30 +483,45 @@ class DemoCollector:
 
         # 确定 root 和 repo_id
         if self._config.data_dir:
-            # 本地模式: LeRobot.create(root=...) 直接把 root 作为数据保存目录
             data_path = os.path.abspath(self._config.data_dir)
             root = data_path
             repo_id = os.path.basename(data_path)
             dataset_label = data_path
-            # 需要先清理已存在的目录，否则 LeRobot.create 会报 FileExistsError
-            if os.path.exists(data_path):
-                resp = input(f"[WARNING] 数据集 {dataset_label} 已存在。覆盖? [y/N]: ")
-                if resp.lower() == "y":
-                    shutil.rmtree(data_path)
-                else:
-                    print("[INFO] 将在已有数据集中追加 episode。")
         else:
-            # HF 模式
-            root = None  # LeRobot 用默认 HF_LEROBOT_HOME
+            root = None
             repo_id = self._config.repo_id
             dataset_label = repo_id
-            output_path = os.path.join(HF_LEROBOT_HOME, repo_id)
-            if os.path.exists(output_path):
-                resp = input(f"[WARNING] 数据集 {dataset_label} 已存在。覆盖? [y/N]: ")
-                if resp.lower() == "y":
-                    shutil.rmtree(output_path)
-                else:
-                    print("[INFO] 将在已有数据集中追加 episode。")
+
+        # 检测已有数据集
+        output_path = root if root else os.path.join(str(HF_LEROBOT_HOME), repo_id)
+        already_exists = os.path.exists(output_path)
+
+        if already_exists and self._config.overwrite:
+            resp = input(f"[WARNING] 将覆盖已有数据集 {dataset_label}。确认? [y/N]: ")
+            if resp.lower() == "y":
+                shutil.rmtree(output_path)
+                already_exists = False
+            else:
+                print("[INFO] 已取消覆盖，将追加 episode")
+
+        if already_exists:
+            # 加载已有数据集，继续追加
+            try:
+                from lerobot.common.datasets.lerobot_dataset import LeRobotDataset as LRD
+
+                self._dataset = LRD(repo_id, root=root)
+                # 读取已有 episode 数，继续编号
+                ep_meta = json.loads(
+                    (Path(output_path) / "meta" / "episodes.jsonl").read_text()
+                ) if (Path(output_path) / "meta" / "episodes.jsonl").exists() else ""
+                existing = len([l for l in ep_meta.strip().split("\n") if l]) if ep_meta else 0
+                self._episode_count = existing
+                print(f"[Dataset] 已连接已有数据集: {output_path} (已有 {existing} 个 episode)")
+                return
+
+            except Exception as e:
+                print(f"[WARNING] 加载已有数据集失败 ({e})，将重建")
+                shutil.rmtree(output_path, ignore_errors=True)
 
         self._dataset = LeRobotDataset.create(
             repo_id=repo_id,
@@ -656,6 +678,7 @@ def _parse_args() -> CollectConfig:
         help="OpenCV 相机设备 ID 回退。第一个=基座，第二个=腕部。如: --cam_ids 0 2",
     )
     p.add_argument("--push_to_hub", action="store_true", help="采集完成后推送到 HuggingFace Hub (需 --repo_id)")
+    p.add_argument("--overwrite", action="store_true", help="覆盖已有数据集 (默认追加新 episode)")
     p.add_argument(
         "--no_preview",
         action="store_true",
@@ -688,6 +711,7 @@ def _parse_args() -> CollectConfig:
         push_to_hub=args.push_to_hub,
         teach_mode=args.teach_mode,
         no_preview=args.no_preview,
+        overwrite=args.overwrite,
     )
 
 
