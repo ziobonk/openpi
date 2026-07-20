@@ -619,6 +619,11 @@ class DemoCollector:
                 api = HfApi()
                 root = self._dataset.root
                 repo_id = self._config.repo_id
+                # 确保 repo 存在
+                try:
+                    api.create_repo(repo_id, repo_type="dataset", private=True, exist_ok=True)
+                except Exception:
+                    pass
 
                 # 收集要上传的文件
                 files = []
@@ -696,6 +701,9 @@ class DemoCollector:
             if self._config.push_to_hub or self._config.stream_hub:
                 print("[Hub] 正在同步数据集到 HuggingFace...")
                 try:
+                    from huggingface_hub import HfApi
+
+                    HfApi().create_repo(self._config.repo_id, repo_type="dataset", private=True, exist_ok=True)
                     self._dataset.push_to_hub(
                         tags=["piper", "robot", "manipulation"],
                         private=True,
