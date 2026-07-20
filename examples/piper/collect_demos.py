@@ -23,9 +23,9 @@ Piper 机械臂数据采集脚本。
     # 覆盖已有数据集
     python examples/piper/collect_demos.py --data_dir ./piper_data --overwrite
 
-    # 边采集边上传，退出时一次性收尾
+    # 分批上传，每 5 个 episode 上传一次
     python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
-        --stream_hub
+        --stream_hub --stream_batch 5
 
     # 采集完成后一次性推送到 HuggingFace Hub
     python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
@@ -271,6 +271,8 @@ class CollectConfig:
     overwrite: bool = False
     # 每保存一个 episode 后立即上传到 HF Hub（仅在 HF 模式有效）
     stream_hub: bool = False
+    # stream_hub 模式下每 N 个 episode 上传一次
+    stream_batch: int = 5
     # HF 分支/版本 (默认 main)
     hf_revision: str = "main"
 
@@ -309,6 +311,7 @@ class DemoCollector:
         self._recording = False
         self._episode_count = 0  # 当前采集的第几个 episode
         self._pending_uploads: list[threading.Thread] = []  # 后台上传线程
+        self._stream_unsaved = 0  # stream_hub 批量: 攒了几个 episode 没上传
 
     # ======================== 运行入口 ========================
 
@@ -390,7 +393,9 @@ class DemoCollector:
                         self._dataset.save_episode()
                         print(f"\n[Recording] Episode #{self._episode_count} 已保存 (约 {step} 帧)")
                         if self._config.stream_hub and self._config.repo_id:
-                            self._upload_current_episode()
+                            self._stream_unsaved += 1
+                            if self._stream_unsaved >= self._config.stream_batch:
+                                self._flush_stream_batch()
                     recording = False
                     self._recording = False
                     step = 0
@@ -577,33 +582,37 @@ class DemoCollector:
 
     # ======================== 上传 ========================
 
-    def _upload_current_episode(self):
-        """后台上传当前 episode 的 parquet + meta 到 HF Hub。
+    def _flush_stream_batch(self):
+        """后台上传攒下的所有 episode 的 parquet + meta 到 HF Hub。
 
-        使用 HfApi.upload_file 增量上传文件，不创建 commit，
-        因此不消耗 HF 的 commit 配额。退出时由 push_to_hub 统一收尾。
+        使用 HfApi.upload_file 批量上传文件（不创建 commit），
+        退出时由 push_to_hub 统一收尾。
         """
+        count = self._stream_unsaved
+        if count == 0:
+            return
+        self._stream_unsaved = 0
+        first_ep = self._episode_count - count + 1
+        last_ep = self._episode_count
 
         def _upload():
-            ep = self._episode_count
             try:
                 from huggingface_hub import HfApi
 
                 api = HfApi()
                 root = self._dataset.root
                 repo_id = self._config.repo_id
-                ep_str = f"episode_{ep - 1:06d}"
-                print(f"[Hub] 后台上传 Episode #{ep} ({ep_str})...")
+                print(f"[Hub] 后台上传 Episode #{first_ep}~#{last_ep} ({count} 个)...")
 
-                # 上传 parquet 文件
-                for pf in (root / "data" / "chunk-000").glob(f"{ep_str}*.parquet"):
+                # 上传 all parquet files in this batch
+                for pf in (root / "data" / "chunk-000").glob("*.parquet"):
                     api.upload_file(
                         path_or_fileobj=str(pf),
                         path_in_repo=f"data/chunk-000/{pf.name}",
                         repo_id=repo_id,
                         repo_type="dataset",
                     )
-                # 上传 meta 文件
+                # 上传 all meta files
                 for mf in (root / "meta").glob("*.json*"):
                     api.upload_file(
                         path_or_fileobj=str(mf),
@@ -611,9 +620,9 @@ class DemoCollector:
                         repo_id=repo_id,
                         repo_type="dataset",
                     )
-                print(f"[Hub] Episode #{ep} 上传完成")
+                print(f"[Hub] Episode #{first_ep}~#{last_ep} 上传完成")
             except Exception as e:
-                print(f"[Hub] Episode #{ep} 上传失败: {e}")
+                print(f"[Hub] 批量上传失败: {e}")
 
         t = threading.Thread(target=_upload, daemon=True)
         t.start()
@@ -629,6 +638,10 @@ class DemoCollector:
         if self._preview_active:
             cv2.destroyAllWindows()
             cv2.waitKey(1)
+
+        # 上传攒下的剩余 episode
+        if self._stream_unsaved > 0:
+            self._flush_stream_batch()
 
         # 等待后台上传完成
         if self._pending_uploads:
@@ -770,7 +783,8 @@ def _parse_args() -> CollectConfig:
         help="OpenCV 相机设备 ID 回退。第一个=基座，第二个=腕部。如: --cam_ids 0 2",
     )
     p.add_argument("--push_to_hub", action="store_true", help="采集完成后一次性推送到 HuggingFace Hub (需 --repo_id)")
-    p.add_argument("--stream_hub", action="store_true", help="每保存一个 episode 立即上传到 Hub (需 --repo_id)")
+    p.add_argument("--stream_hub", action="store_true", help="分批上传到 Hub (需 --repo_id)")
+    p.add_argument("--stream_batch", type=int, default=5, help="stream_hub 每 N 个 episode 上传一次 (默认 5)")
     p.add_argument("--hf_revision", default="main", help="HF 数据集分支 (默认 main，如 v2.1)")
     p.add_argument("--overwrite", action="store_true", help="覆盖已有数据集 (默认追加新 episode)")
     p.add_argument(
@@ -804,6 +818,7 @@ def _parse_args() -> CollectConfig:
         cv_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
         push_to_hub=args.push_to_hub,
         stream_hub=args.stream_hub,
+        stream_batch=args.stream_batch,
         hf_revision=args.hf_revision,
         teach_mode=args.teach_mode,
         no_preview=args.no_preview,
