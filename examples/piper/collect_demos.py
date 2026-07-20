@@ -292,6 +292,7 @@ class DemoCollector:
         # 运行状态
         self._running = False
         self._recording = False
+        self._episode_count = 0  # 当前采集的第几个 episode
 
     # ======================== 运行入口 ========================
 
@@ -362,22 +363,24 @@ class DemoCollector:
                     recording = True
                     self._recording = True
                     step = 0
+                    self._episode_count += 1
                     task = self._prompt_for_task()
-                    print(f"\n[Recording] 开始 episode, 指令: '{task}'")
-                    print("[Recording] 按 's' 停止当前 episode")
+                    print(f"\n[Recording] Episode #{self._episode_count} 开始, 指令: '{task}'")
+                    print("[Recording] 按 's' 保存 | 'd' 丢弃")
                 elif ch == "s":
                     if recording:
                         self._dataset.save_episode()
-                        print(f"\n[Recording] Episode 已保存 (约 {step} 帧)")
+                        print(f"\n[Recording] Episode #{self._episode_count} 已保存 (约 {step} 帧)")
                     recording = False
                     self._recording = False
                     step = 0
                 elif ch == "d":
                     if recording:
-                        confirm = input("  确认丢弃当前 episode? [y/N]: ").strip().lower()
+                        confirm = input(f"  确认丢弃 Episode #{self._episode_count}? [y/N]: ").strip().lower()
                         if confirm == "y":
                             self._dataset.clear_episode_buffer()
-                            print(f"\n[Recording] Episode 已丢弃 (约 {step} 帧未保存)")
+                            print(f"\n[Recording] Episode #{self._episode_count} 已丢弃 (约 {step} 帧未保存)")
+                            self._episode_count -= 1
                             recording = False
                             self._recording = False
                             step = 0
@@ -425,7 +428,7 @@ class DemoCollector:
         if step % 50 == 0 and step > 0:
             joints = frame["state"]
             j_str = ", ".join(f"{j:.3f}" for j in joints[:6])
-            print(f"  [{step:5d}] joints(rad)=[{j_str}]")
+            print(f"  [Ep#{self._episode_count} step={step:5d}] joints(rad)=[{j_str}]")
 
     # ======================== 数据集初始化 ========================
 
@@ -619,7 +622,7 @@ class TeachModeCollector(DemoCollector):
 
         if step % 50 == 0 and step > 0:
             j_str = ", ".join(f"{j:.3f}" for j in state[:6])
-            print(f"  [{step:5d}] joints(rad)=[{j_str}]")
+            print(f"  [Ep#{self._episode_count} step={step:5d}] joints(rad)=[{j_str}]")
 
 
 # ============================================================================
