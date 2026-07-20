@@ -514,22 +514,21 @@ class DemoCollector:
                 print("[INFO] 已取消覆盖，将追加 episode")
 
         if already_exists:
-            # 加载已有数据集，继续追加
-            try:
-                from lerobot.common.datasets.lerobot_dataset import LeRobotDataset as LRD
+            # 先数已有 episode（只读 meta，不加载全量数据）
+            ep_file = Path(output_path) / "meta" / "episodes.jsonl"
+            existing = 0
+            if ep_file.exists():
+                existing = sum(1 for _ in ep_file.read_text().strip().split("\n") if _.strip())
 
-                self._dataset = LRD(repo_id, root=root)
-                # 读取已有 episode 数，继续编号
-                ep_meta = json.loads(
-                    (Path(output_path) / "meta" / "episodes.jsonl").read_text()
-                ) if (Path(output_path) / "meta" / "episodes.jsonl").exists() else ""
-                existing = len([l for l in ep_meta.strip().split("\n") if l]) if ep_meta else 0
+            # 尝试加载已有数据集
+            try:
+                self._dataset = LeRobotDataset(repo_id, root=root)
                 self._episode_count = existing
                 print(f"[Dataset] 已连接已有数据集: {output_path} (已有 {existing} 个 episode)")
                 return
-
-            except Exception as e:
-                print(f"[WARNING] 加载已有数据集失败 ({e})，将重建")
+            except Exception:
+                # 加载失败（如数据不完整）→ 重建本地缓存，从 HF 重新同步
+                print(f"[Dataset] 本地缓存损坏，重建中...")
                 shutil.rmtree(output_path, ignore_errors=True)
 
         self._dataset = LeRobotDataset.create(
