@@ -583,11 +583,7 @@ class DemoCollector:
     # ======================== 上传 ========================
 
     def _flush_stream_batch(self):
-        """后台上传攒下的所有 episode 的 parquet + meta 到 HF Hub。
-
-        使用 HfApi.upload_file 批量上传文件（不创建 commit），
-        退出时由 push_to_hub 统一收尾。
-        """
+        """后台上传攒下的所有 episode，上传完成后清理本地 parquet 缓存。"""
         count = self._stream_unsaved
         if count == 0:
             return
@@ -604,7 +600,7 @@ class DemoCollector:
                 repo_id = self._config.repo_id
                 print(f"[Hub] 后台上传 Episode #{first_ep}~#{last_ep} ({count} 个)...")
 
-                # 上传 all parquet files in this batch
+                uploaded = []
                 for pf in (root / "data" / "chunk-000").glob("*.parquet"):
                     api.upload_file(
                         path_or_fileobj=str(pf),
@@ -612,7 +608,7 @@ class DemoCollector:
                         repo_id=repo_id,
                         repo_type="dataset",
                     )
-                # 上传 all meta files
+                    uploaded.append(pf)
                 for mf in (root / "meta").glob("*.json*"):
                     api.upload_file(
                         path_or_fileobj=str(mf),
@@ -621,6 +617,11 @@ class DemoCollector:
                         repo_type="dataset",
                     )
                 print(f"[Hub] Episode #{first_ep}~#{last_ep} 上传完成")
+
+                # 清理已上传的 parquet（meta 保留给 LeRobot 用）
+                for pf in uploaded:
+                    pf.unlink(missing_ok=True)
+                print(f"[Hub] 已清理 {len(uploaded)} 个本地 parquet 缓存")
             except Exception as e:
                 print(f"[Hub] 批量上传失败: {e}")
 
