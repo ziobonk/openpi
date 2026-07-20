@@ -332,11 +332,6 @@ class DemoCollector:
             login(token=self._config.hf_token)
             print("[HF] 已登录")
 
-        # 设置本地缓存目录
-        if self._config.cache_dir:
-            os.environ["HF_LEROBOT_HOME"] = self._config.cache_dir
-            print(f"[Cache] 缓存目录: {self._config.cache_dir}")
-
         # 使能机械臂
         # if not self._robot.enable():
         #     self._robot.disable()
@@ -523,12 +518,14 @@ class DemoCollector:
             repo_id = os.path.basename(data_path)
             dataset_label = data_path
         else:
-            root = None
+            # HF 模式：缓存到 cache_dir 或默认 HF_LEROBOT_HOME
+            base_dir = self._config.cache_dir or str(HF_LEROBOT_HOME)
+            root = os.path.join(base_dir, self._config.repo_id)
             repo_id = self._config.repo_id
             dataset_label = repo_id
 
         # 检测已有数据集
-        output_path = root if root else os.path.join(str(HF_LEROBOT_HOME), repo_id)
+        output_path = root
         already_exists = os.path.exists(output_path)
 
         # HF 模式：从 Hub 拉 meta 来数已有 episode（即使本地无缓存）
@@ -577,8 +574,7 @@ class DemoCollector:
         )
 
         # 打印保存路径
-        actual_path = root if root else os.path.join(HF_LEROBOT_HOME, repo_id)
-        print(f"[Dataset] 数据集已初始化: {actual_path}")
+        print(f"[Dataset] 数据集已初始化: {root}")
 
     # ======================== HF 工具 ========================
 
