@@ -871,7 +871,8 @@ _CONFIGS = [
             action_dim=32,
             action_horizon=10,
             discrete_state_input=False,
-            paligemma_variant="gemma_2b_lora",  # LoRA 微调
+            paligemma_variant="gemma_2b_lora",  # LoRA 微调,
+            action_expert_variant='gemma_300m_lora'
         ),
         data=LeRobotPiperDataConfig(
             repo_id="piper_data",
@@ -881,7 +882,7 @@ _CONFIGS = [
             local_data_dir="./piper_data",
         ),
         freeze_filter=pi0_config.Pi0Config(
-            pi05=True, paligemma_variant="gemma_2b_lora"
+            pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant='gemma_300m_lora'
         ).get_freeze_filter(),  # 仅训练 LoRA 层，基座冻结
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
         batch_size=8,  # 按显存调整: 24GB→8, 48GB→16, 80GB→32
