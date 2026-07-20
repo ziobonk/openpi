@@ -562,20 +562,30 @@ class DemoCollector:
 
     @staticmethod
     def _fetch_hf_meta(repo_id: str, local_dir: str):
-        """从 HuggingFace Hub 下载 meta 文件到本地（仅 meta，不含 parquet）。"""
+        """从 HuggingFace Hub 下载 meta 文件到本地（仅 meta，不含 parquet）。
+
+        失败时静默跳过 — 可能是未登录、无网络、或 repo 不存在。
+        此时 episode 计数从 0 开始。
+        """
         try:
-            from huggingface_hub import hf_hub_download
+            from huggingface_hub import hf_hub_download, whoami
+
+            # 先检查是否已登录
+            try:
+                whoami()
+            except Exception:
+                print("[Dataset] 未登录 HuggingFace，无法检测 HF 已有 episode。")
+                print("  运行 huggingface-cli login 后重试")
+                return
 
             Path(local_dir).mkdir(parents=True, exist_ok=True)
             for f in ["meta/info.json", "meta/episodes.jsonl", "meta/tasks.jsonl"]:
                 try:
-                    hf_hub_download(
-                        repo_id, f, repo_type="dataset", local_dir=local_dir,
-                    )
+                    hf_hub_download(repo_id, f, repo_type="dataset", local_dir=local_dir)
                 except Exception:
-                    pass  # 文件不存在就跳过
+                    pass
         except Exception:
-            pass  # 无网络或未登录就跳过
+            pass
 
     # ======================== 上传 ========================
 
