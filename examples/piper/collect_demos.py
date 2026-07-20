@@ -424,20 +424,18 @@ class DemoCollector:
         # 状态
         frame["state"] = self._robot.get_state().astype(np.float32)  # (7,)
 
-        # 动作 — 对于采集来说，这里的动作是"当前正在执行的指令"。
-        # 如果是从遥控操作（示教模式）采集，则需要跟踪控制指令。
-        # 这里使用当前关节位置作为 "action"（即记录示教动作的目标值）。
-        # 真实场景中你可能需要从另一个 CAN 帧中读取控制端发送的指令。
+        # 动作
         frame["actions"] = self._robot.get_state().astype(np.float32)  # (7,) — 同 state
 
         # 语言指令
         frame["task"] = task
 
-        # 图像
+        # 图像（仅当数据集支持这些 feature 时才添加）
         if self._camera:
-            if self._has_base_cam:
+            ds_features = getattr(self._dataset, "features", {})
+            if self._has_base_cam and "image" in ds_features:
                 frame["image"] = self._camera.get_base()
-            if self._has_wrist_cam:
+            if self._has_wrist_cam and "wrist_image" in ds_features:
                 frame["wrist_image"] = self._camera.get_wrist()
 
         self._dataset.add_frame(frame)
@@ -726,9 +724,10 @@ class TeachModeCollector(DemoCollector):
         frame["task"] = task
 
         if self._camera:
-            if self._has_base_cam:
+            ds_features = getattr(self._dataset, "features", {})
+            if self._has_base_cam and "image" in ds_features:
                 frame["image"] = self._camera.get_base()
-            if self._has_wrist_cam:
+            if self._has_wrist_cam and "wrist_image" in ds_features:
                 frame["wrist_image"] = self._camera.get_wrist()
 
         self._dataset.add_frame(frame)
