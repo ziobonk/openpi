@@ -630,16 +630,26 @@ class DemoCollector:
 
                 uploaded_parquets = []
                 for i, (kind, f) in enumerate(files, 1):
-                    print(f"  [{i}/{len(files)}] 上传 {f.name}...", end="", flush=True)
-                    api.upload_file(
-                        path_or_fileobj=str(f),
-                        path_in_repo=f"data/chunk-000/{f.name}" if kind == "parquet" else f"meta/{f.name}",
-                        repo_id=repo_id,
-                        repo_type="dataset",
-                    )
-                    print(" OK")
-                    if kind == "parquet":
-                        uploaded_parquets.append(f)
+                    for attempt in range(3):
+                        try:
+                            print(f"  [{i}/{len(files)}] 上传 {f.name}...", end="", flush=True)
+                            api.upload_file(
+                                path_or_fileobj=str(f),
+                                path_in_repo=f"data/chunk-000/{f.name}" if kind == "parquet" else f"meta/{f.name}",
+                                repo_id=repo_id,
+                                repo_type="dataset",
+                            )
+                            print(" OK")
+                            if kind == "parquet":
+                                uploaded_parquets.append(f)
+                            break
+                        except Exception as ex:
+                            if attempt < 2:
+                                print(f" 重试({ex})")
+                                time.sleep(2)
+                            else:
+                                print(f" 失败: {ex}")
+                                raise
 
                 print(f"[Hub] Episode #{first_ep}~#{last_ep} 上传完成")
 
