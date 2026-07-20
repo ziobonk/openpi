@@ -614,6 +614,7 @@ class DemoCollector:
         def _upload():
             try:
                 from huggingface_hub import HfApi
+                from tqdm import tqdm
 
                 api = HfApi()
                 root = self._dataset.root
@@ -626,30 +627,34 @@ class DemoCollector:
                 for mf in sorted((root / "meta").glob("*.json*")):
                     files.append(("meta", mf))
 
-                print(f"[Hub] 后台上传 Episode #{first_ep}~#{last_ep} ({count} 个, {len(files)} 个文件)...")
+                total_size = sum(f.stat().st_size for _, f in files)
+                print(f"[Hub] 后台上传 Episode #{first_ep}~#{last_ep} ({count} 个, {len(files)} 个文件, {total_size/1024/1024:.1f}MB)...")
 
                 uploaded_parquets = []
+                pbar = tqdm(total=total_size, unit="B", unit_scale=True, desc="[Hub] 上传")
                 for i, (kind, f) in enumerate(files, 1):
+                    fsize = f.stat().st_size
+                    pbar.set_postfix_str(f"{f.name} ({i}/{len(files)})")
                     for attempt in range(3):
                         try:
-                            print(f"  [{i}/{len(files)}] 上传 {f.name}...", end="", flush=True)
                             api.upload_file(
                                 path_or_fileobj=str(f),
                                 path_in_repo=f"data/chunk-000/{f.name}" if kind == "parquet" else f"meta/{f.name}",
                                 repo_id=repo_id,
                                 repo_type="dataset",
                             )
-                            print(" OK")
+                            pbar.update(fsize)
                             if kind == "parquet":
                                 uploaded_parquets.append(f)
                             break
                         except Exception as ex:
                             if attempt < 2:
-                                print(f" 重试({ex})")
-                                time.sleep(2)
+                                time.sleep(3)
                             else:
-                                print(f" 失败: {ex}")
+                                pbar.close()
+                                print(f"\n[Hub] {f.name} 上传失败: {ex}")
                                 raise
+                pbar.close()
 
                 print(f"[Hub] Episode #{first_ep}~#{last_ep} 上传完成")
 
