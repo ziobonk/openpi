@@ -23,11 +23,7 @@ Piper 机械臂数据采集脚本。
     # 覆盖已有数据集
     python examples/piper/collect_demos.py --data_dir ./piper_data --overwrite
 
-    # 边采集边上传 (需 --repo_id)
-    python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
-        --stream_hub
-
-    # 采集完成后一次性推送
+    # 采集完成后一次性推送到 HuggingFace Hub
     python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
         --push_to_hub
 
@@ -269,8 +265,6 @@ class CollectConfig:
     no_preview: bool = False
     # 覆盖已有数据集 (否则默认追加 episode)
     overwrite: bool = False
-    # 每保存一个 episode 后立即上传到 HF Hub（仅在 HF 模式有效）
-    stream_hub: bool = False
 
 
 class DemoCollector:
@@ -306,7 +300,6 @@ class DemoCollector:
         self._running = False
         self._recording = False
         self._episode_count = 0  # 当前采集的第几个 episode
-        self._pending_uploads: list[threading.Thread] = []  # 后台上传线程
 
     # ======================== 运行入口 ========================
 
@@ -385,8 +378,6 @@ class DemoCollector:
                     if recording:
                         self._dataset.save_episode()
                         print(f"\n[Recording] Episode #{self._episode_count} 已保存 (约 {step} 帧)")
-                        if self._config.stream_hub and self._config.repo_id:
-                            self._upload_current_episode()
                     recording = False
                     self._recording = False
                     step = 0
@@ -587,49 +578,6 @@ class DemoCollector:
         except Exception:
             pass
 
-    # ======================== 上传 ========================
-
-    def _upload_current_episode(self):
-        """后台上传当前 episode 的新文件到 HF Hub（只传增量，不覆盖已有）。"""
-
-        def _upload():
-            ep = self._episode_count
-            try:
-                from huggingface_hub import HfApi
-
-                api = HfApi()
-                dataset_root = self._dataset.root
-                repo_id = self._config.repo_id
-                ep_str = f"episode_{ep - 1:06d}"  # 0-indexed: ep #1 → episode_000000
-                print(f"[Hub] 后台上传 Episode #{ep} ({ep_str})...")
-
-                # 上传 parquet
-                parquet_dir = dataset_root / "data" / "chunk-000"
-                for pf in parquet_dir.glob(f"{ep_str}*.parquet"):
-                    api.upload_file(
-                        path_or_fileobj=str(pf),
-                        path_in_repo=f"data/chunk-000/{pf.name}",
-                        repo_id=repo_id,
-                        repo_type="dataset",
-                    )
-
-                # 上传 meta（更新 episodes.jsonl 等）
-                for mf in (dataset_root / "meta").glob("*.json*"):
-                    api.upload_file(
-                        path_or_fileobj=str(mf),
-                        path_in_repo=f"meta/{mf.name}",
-                        repo_id=repo_id,
-                        repo_type="dataset",
-                    )
-
-                print(f"[Hub] Episode #{ep} 上传完成")
-            except Exception as e:
-                print(f"[Hub] Episode #{ep} 上传失败: {e}")
-
-        t = threading.Thread(target=_upload, daemon=True)
-        t.start()
-        self._pending_uploads.append(t)
-
     # ======================== 清理 ========================
 
     def _shutdown(self):
@@ -642,38 +590,19 @@ class DemoCollector:
             cv2.destroyAllWindows()
             cv2.waitKey(1)
 
-        # 等待后台上传完成
-        if self._pending_uploads:
-            print(f"[Hub] 等待 {len(self._pending_uploads)} 个后台上传完成...")
-            for t in self._pending_uploads:
-                t.join(timeout=120)
-            self._pending_uploads.clear()
-
-        # 推送到 Hub (只传增量文件，不覆盖已有)
-        if self._config.repo_id and self._dataset:
-            if self._config.push_to_hub or self._config.stream_hub:
-                if self._config.stream_hub:
-                    print("[Hub] 所有 episode 已逐条上传，数据集同步完成")
-                else:
-                    print("[Hub] 正在上传增量数据...")
-                    try:
-                        from huggingface_hub import HfApi
-
-                        api = HfApi()
-                        dataset_root = self._dataset.root
-                        repo_id = self._config.repo_id
-                        for f in dataset_root.rglob("*"):
-                            if f.is_file() and ".git" not in str(f):
-                                rel = str(f.relative_to(dataset_root))
-                                api.upload_file(
-                                    path_or_fileobj=str(f),
-                                    path_in_repo=rel,
-                                    repo_id=repo_id,
-                                    repo_type="dataset",
-                                )
-                        print("[Hub] 上传完成")
-                    except Exception as e:
-                        print(f"[Hub] 上传失败: {e}")
+        # 一次性推送完整数据集到 HF Hub
+        if self._config.push_to_hub and self._config.repo_id and self._dataset:
+            print("[Hub] 正在上传完整数据集...")
+            try:
+                self._dataset.push_to_hub(
+                    tags=["piper", "robot", "manipulation"],
+                    private=True,
+                    push_videos=False,
+                    license="apache-2.0",
+                )
+                print("[Hub] 上传完成")
+            except Exception as e:
+                print(f"[Hub] 上传失败: {e}")
 
         print("[INFO] 采集器已退出 (机械臂保持使能)")
 
@@ -791,8 +720,7 @@ def _parse_args() -> CollectConfig:
         default=[],
         help="OpenCV 相机设备 ID 回退。第一个=基座，第二个=腕部。如: --cam_ids 0 2",
     )
-    p.add_argument("--push_to_hub", action="store_true", help="采集完成后推送到 HuggingFace Hub (需 --repo_id)")
-    p.add_argument("--stream_hub", action="store_true", help="每保存一个 episode 立即上传到 Hub (需 --repo_id)")
+    p.add_argument("--push_to_hub", action="store_true", help="采集完成后一次性推送到 HuggingFace Hub (需 --repo_id)")
     p.add_argument("--overwrite", action="store_true", help="覆盖已有数据集 (默认追加新 episode)")
     p.add_argument(
         "--no_preview",
@@ -824,7 +752,6 @@ def _parse_args() -> CollectConfig:
         cv_base_id=args.cam_ids[0] if len(args.cam_ids) > 0 else None,
         cv_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
         push_to_hub=args.push_to_hub,
-        stream_hub=args.stream_hub,
         teach_mode=args.teach_mode,
         no_preview=args.no_preview,
         overwrite=args.overwrite,
