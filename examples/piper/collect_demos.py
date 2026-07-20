@@ -33,6 +33,7 @@ Piper 机械臂数据采集脚本。
 键盘控制:
     Enter   — 开始新的 episode（会提示输入指令语）
     s       — 停止当前 episode 并保存
+    d       — 丢弃当前 episode（不保存，确认后清除）
     q       — 退出程序 (机械臂保持使能)
     ESC     — 同 q
 
@@ -301,12 +302,12 @@ class DemoCollector:
         print("=" * 60)
 
         # 使能机械臂
-        if not self._robot.enable():
-            self._robot.disable()
-            return
+        # if not self._robot.enable():
+        #     self._robot.disable()
+        #     return
 
-        # 切换为关节模式（低速率以策安全）
-        self._robot.set_joint_mode(speed_pct=30)
+        # # 切换为关节模式（低速率以策安全）
+        # self._robot.set_joint_mode(speed_pct=30)
 
         # 启动相机
         if self._camera:
@@ -328,7 +329,8 @@ class DemoCollector:
         # 打印操作提示
         print("\n操作提示:")
         print("  [Enter]  开始新 episode")
-        print("  [s]      停止当前 episode")
+        print("  [s]      保存当前 episode")
+        print("  [d]      丢弃当前 episode (不保存)")
         print("  [q]      退出\n")
 
         self._running = True
@@ -370,6 +372,17 @@ class DemoCollector:
                     recording = False
                     self._recording = False
                     step = 0
+                elif ch == "d":
+                    if recording:
+                        confirm = input("  确认丢弃当前 episode? [y/N]: ").strip().lower()
+                        if confirm == "y":
+                            self._dataset.clear_episode_buffer()
+                            print(f"\n[Recording] Episode 已丢弃 (约 {step} 帧未保存)")
+                            recording = False
+                            self._recording = False
+                            step = 0
+                        else:
+                            print("  已取消，继续录制")
                 elif ch == "q":
                     self._running = False
                     break
