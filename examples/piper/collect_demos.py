@@ -505,6 +505,11 @@ class DemoCollector:
         output_path = root if root else os.path.join(str(HF_LEROBOT_HOME), repo_id)
         already_exists = os.path.exists(output_path)
 
+        # HF 模式：从 Hub 拉 meta 来数已有 episode（即使本地无缓存）
+        if not self._config.data_dir and repo_id:
+            self._fetch_hf_meta(repo_id, output_path)
+            already_exists = os.path.exists(output_path)
+
         if already_exists and self._config.overwrite:
             resp = input(f"[WARNING] 将覆盖已有数据集 {dataset_label}。确认? [y/N]: ")
             if resp.lower() == "y":
@@ -552,6 +557,25 @@ class DemoCollector:
         # 打印保存路径
         actual_path = root if root else os.path.join(HF_LEROBOT_HOME, repo_id)
         print(f"[Dataset] 数据集已初始化: {actual_path}")
+
+    # ======================== HF 工具 ========================
+
+    @staticmethod
+    def _fetch_hf_meta(repo_id: str, local_dir: str):
+        """从 HuggingFace Hub 下载 meta 文件到本地（仅 meta，不含 parquet）。"""
+        try:
+            from huggingface_hub import hf_hub_download
+
+            Path(local_dir).mkdir(parents=True, exist_ok=True)
+            for f in ["meta/info.json", "meta/episodes.jsonl", "meta/tasks.jsonl"]:
+                try:
+                    hf_hub_download(
+                        repo_id, f, repo_type="dataset", local_dir=local_dir,
+                    )
+                except Exception:
+                    pass  # 文件不存在就跳过
+        except Exception:
+            pass  # 无网络或未登录就跳过
 
     # ======================== 上传 ========================
 
