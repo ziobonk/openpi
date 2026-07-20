@@ -630,13 +630,14 @@ class DemoCollector:
 
                 uploaded_parquets = []
                 for i, (kind, f) in enumerate(files, 1):
-                    print(f"  [{i}/{len(files)}] {f.name}")
+                    print(f"  [{i}/{len(files)}] 上传 {f.name}...", end="", flush=True)
                     api.upload_file(
                         path_or_fileobj=str(f),
                         path_in_repo=f"data/chunk-000/{f.name}" if kind == "parquet" else f"meta/{f.name}",
                         repo_id=repo_id,
                         repo_type="dataset",
                     )
+                    print(" OK")
                     if kind == "parquet":
                         uploaded_parquets.append(f)
 
