@@ -6,6 +6,7 @@ Piper LeRobot 数据集可视化工具。
   - 关节角轨迹图 (state 和 actions)
   - 同步的相机图像回放
   - Episode 统计信息
+  pick up the pen and place it into the cup
 
 用法:
     python examples/piper/view_dataset.py --data_dir ./piper_data
@@ -421,8 +422,12 @@ def main():
         task = ", ".join(ep_meta[ep_idx].get("tasks", ["(无)"]))
 
     if args.gif:
+        print(f"\n导出 Episode {ep_idx}/{len(frames)} — 任务: {task or '(无)'}")
         export_gif(df, args.gif, task=task)
     else:
+        total = len(frames)
+        available = sorted(frames.keys())
+        print(f"\n正在播放 Episode {ep_idx}/{total} (可用: {available}) — 任务: {task or '(无)'}")
         show_episode_gui(df, ep_idx, task=task)
 
 
