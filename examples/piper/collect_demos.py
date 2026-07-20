@@ -271,6 +271,8 @@ class CollectConfig:
     overwrite: bool = False
     # 每保存一个 episode 后立即上传到 HF Hub（仅在 HF 模式有效）
     stream_hub: bool = False
+    # HF 分支/版本 (默认 main)
+    hf_revision: str = "main"
 
 
 class DemoCollector:
@@ -507,7 +509,7 @@ class DemoCollector:
 
         # HF 模式：从 Hub 拉 meta 来数已有 episode（即使本地无缓存）
         if not self._config.data_dir and repo_id:
-            self._fetch_hf_meta(repo_id, output_path)
+            self._fetch_hf_meta(repo_id, output_path, revision=self._config.hf_revision)
             already_exists = os.path.exists(output_path)
 
         if already_exists and self._config.overwrite:
@@ -521,7 +523,10 @@ class DemoCollector:
         if already_exists:
             # 加载已有数据集（HF 模式会自动下载缺失的 parquet）
             try:
-                self._dataset = LeRobotDataset(repo_id, root=root)
+                kwargs = {}
+                if not self._config.data_dir:
+                    kwargs["revision"] = self._config.hf_revision
+                self._dataset = LeRobotDataset(repo_id, root=root, **kwargs)
                 ep_file = Path(output_path) / "meta" / "episodes.jsonl"
                 existing = sum(1 for _ in ep_file.read_text().strip().split("\n") if _.strip()) if ep_file.exists() else 0
                 self._episode_count = existing
@@ -549,16 +554,11 @@ class DemoCollector:
     # ======================== HF 工具 ========================
 
     @staticmethod
-    def _fetch_hf_meta(repo_id: str, local_dir: str):
-        """从 HuggingFace Hub 下载 meta 文件到本地（仅 meta，不含 parquet）。
-
-        失败时静默跳过 — 可能是未登录、无网络、或 repo 不存在。
-        此时 episode 计数从 0 开始。
-        """
+    def _fetch_hf_meta(repo_id: str, local_dir: str, revision: str = "main"):
+        """从 HuggingFace Hub 下载 meta 文件到本地（仅 meta，不含 parquet）。"""
         try:
             from huggingface_hub import hf_hub_download, whoami
 
-            # 先检查是否已登录
             try:
                 whoami()
             except Exception:
@@ -569,7 +569,7 @@ class DemoCollector:
             Path(local_dir).mkdir(parents=True, exist_ok=True)
             for f in ["meta/info.json", "meta/episodes.jsonl", "meta/tasks.jsonl"]:
                 try:
-                    hf_hub_download(repo_id, f, repo_type="dataset", local_dir=local_dir)
+                    hf_hub_download(repo_id, f, repo_type="dataset", local_dir=local_dir, revision=revision)
                 except Exception:
                     pass
         except Exception:
@@ -770,6 +770,7 @@ def _parse_args() -> CollectConfig:
     )
     p.add_argument("--push_to_hub", action="store_true", help="采集完成后一次性推送到 HuggingFace Hub (需 --repo_id)")
     p.add_argument("--stream_hub", action="store_true", help="每保存一个 episode 立即上传到 Hub (需 --repo_id)")
+    p.add_argument("--hf_revision", default="main", help="HF 数据集分支 (默认 main，如 v2.1)")
     p.add_argument("--overwrite", action="store_true", help="覆盖已有数据集 (默认追加新 episode)")
     p.add_argument(
         "--no_preview",
@@ -802,6 +803,7 @@ def _parse_args() -> CollectConfig:
         cv_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
         push_to_hub=args.push_to_hub,
         stream_hub=args.stream_hub,
+        hf_revision=args.hf_revision,
         teach_mode=args.teach_mode,
         no_preview=args.no_preview,
         overwrite=args.overwrite,
