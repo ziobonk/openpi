@@ -378,7 +378,10 @@ class DemoCollector:
             # 非阻塞检查键盘输入 (select 超时 0)
             if select.select([sys.stdin], [], [], 0)[0]:
                 ch = sys.stdin.readline().strip().lower()
-                if ch == "":  # Enter
+                if ch == "":  # Enter — 仅在未录制时有效
+                    if recording:
+                        print("  [提示] 录制中，按 s 保存 / d 丢弃")
+                        continue
                     recording = True
                     self._recording = True
                     step = 0
