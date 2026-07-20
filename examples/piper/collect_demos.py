@@ -23,9 +23,9 @@ Piper 机械臂数据采集脚本。
     # 覆盖已有数据集
     python examples/piper/collect_demos.py --data_dir ./piper_data --overwrite
 
-    # 分批上传，每 5 个 episode 上传一次
+    # 带 token 登录 (不需 huggingface-cli login)
     python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
-        --stream_hub --stream_batch 5
+        --stream_hub --hf_token hf_xxxxxx
 
     # 采集完成后一次性推送到 HuggingFace Hub
     python examples/piper/collect_demos.py --repo_id your_hf_username/piper_task \
@@ -275,6 +275,8 @@ class CollectConfig:
     stream_batch: int = 5
     # HF 分支/版本 (默认 main)
     hf_revision: str = "main"
+    # HuggingFace token (也可设环境变量 HF_TOKEN)
+    hf_token: str | None = None
 
 
 class DemoCollector:
@@ -320,6 +322,13 @@ class DemoCollector:
         print("=" * 60)
         print("Piper 机械臂数据采集器")
         print("=" * 60)
+
+        # 登录 HuggingFace (如果提供了 token)
+        if self._config.hf_token:
+            from huggingface_hub import login
+
+            login(token=self._config.hf_token)
+            print("[HF] 已登录")
 
         # 使能机械臂
         # if not self._robot.enable():
@@ -799,6 +808,7 @@ def _parse_args() -> CollectConfig:
     p.add_argument("--stream_hub", action="store_true", help="分批上传到 Hub (需 --repo_id)")
     p.add_argument("--stream_batch", type=int, default=5, help="stream_hub 每 N 个 episode 上传一次 (默认 5)")
     p.add_argument("--hf_revision", default="main", help="HF 数据集分支 (默认 main，如 v2.1)")
+    p.add_argument("--hf_token", default=None, help="HuggingFace token (也可设环境变量 HF_TOKEN)")
     p.add_argument("--overwrite", action="store_true", help="覆盖已有数据集 (默认追加新 episode)")
     p.add_argument(
         "--no_preview",
@@ -833,6 +843,7 @@ def _parse_args() -> CollectConfig:
         stream_hub=args.stream_hub,
         stream_batch=args.stream_batch,
         hf_revision=args.hf_revision,
+        hf_token=args.hf_token or os.environ.get("HF_TOKEN"),
         teach_mode=args.teach_mode,
         no_preview=args.no_preview,
         overwrite=args.overwrite,
