@@ -519,28 +519,16 @@ class DemoCollector:
                 print("[INFO] 已取消覆盖，将追加 episode")
 
         if already_exists:
-            # 本地已有数据→尝试加载（本地模式）
-            if self._config.data_dir:
-                try:
-                    self._dataset = LeRobotDataset(repo_id, root=root)
-                    # 读已有 episode 数
-                    ep_file = Path(output_path) / "meta" / "episodes.jsonl"
-                    existing = sum(1 for _ in ep_file.read_text().strip().split("\n") if _.strip()) if ep_file.exists() else 0
-                    self._episode_count = existing
-                    print(f"[Dataset] 已连接: {output_path} (已有 {existing} 个 episode)")
-                    return
-                except Exception as e:
-                    print(f"[WARNING] 加载失败 ({e})，重建本地数据集")
-                    shutil.rmtree(output_path, ignore_errors=True)
-            else:
-                # HF 模式：只读 meta 数 episode，不下载全量数据
+            # 加载已有数据集（HF 模式会自动下载缺失的 parquet）
+            try:
+                self._dataset = LeRobotDataset(repo_id, root=root)
                 ep_file = Path(output_path) / "meta" / "episodes.jsonl"
-                existing = 0
-                if ep_file.exists():
-                    existing = sum(1 for _ in ep_file.read_text().strip().split("\n") if _.strip())
+                existing = sum(1 for _ in ep_file.read_text().strip().split("\n") if _.strip()) if ep_file.exists() else 0
                 self._episode_count = existing
-                print(f"[Dataset] HF 已有 {existing} 个 episode，从 #{existing + 1} 开始 (仅下载 meta)")
-                # 删本地缓存，从头创建（后续只上传新 episode）
+                print(f"[Dataset] 已连接: {output_path} (已有 {existing} 个 episode)")
+                return
+            except Exception as e:
+                print(f"[WARNING] 加载已有数据集失败 ({e})，重建本地缓存")
                 shutil.rmtree(output_path, ignore_errors=True)
 
         self._dataset = LeRobotDataset.create(
