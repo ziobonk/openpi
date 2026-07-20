@@ -381,7 +381,9 @@ class DemoCollector:
                     step = 0
                     self._episode_count += 1
                     task = self._prompt_for_task()
+                    ds_features = list(getattr(self._dataset, "features", {}).keys())
                     print(f"\n[Recording] Episode #{self._episode_count} 开始, 指令: '{task}'")
+                    print(f"[Recording] features: {ds_features}")
                     print("[Recording] 按 's' 保存 | 'd' 丢弃")
                 elif ch == "s":
                     if recording:
