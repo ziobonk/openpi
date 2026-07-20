@@ -514,21 +514,28 @@ class DemoCollector:
                 print("[INFO] 已取消覆盖，将追加 episode")
 
         if already_exists:
-            # 先数已有 episode（只读 meta，不加载全量数据）
-            ep_file = Path(output_path) / "meta" / "episodes.jsonl"
-            existing = 0
-            if ep_file.exists():
-                existing = sum(1 for _ in ep_file.read_text().strip().split("\n") if _.strip())
-
-            # 尝试加载已有数据集
-            try:
-                self._dataset = LeRobotDataset(repo_id, root=root)
+            # 本地已有数据→尝试加载（本地模式）
+            if self._config.data_dir:
+                try:
+                    self._dataset = LeRobotDataset(repo_id, root=root)
+                    # 读已有 episode 数
+                    ep_file = Path(output_path) / "meta" / "episodes.jsonl"
+                    existing = sum(1 for _ in ep_file.read_text().strip().split("\n") if _.strip()) if ep_file.exists() else 0
+                    self._episode_count = existing
+                    print(f"[Dataset] 已连接: {output_path} (已有 {existing} 个 episode)")
+                    return
+                except Exception as e:
+                    print(f"[WARNING] 加载失败 ({e})，重建本地数据集")
+                    shutil.rmtree(output_path, ignore_errors=True)
+            else:
+                # HF 模式：只读 meta 数 episode，不下载全量数据
+                ep_file = Path(output_path) / "meta" / "episodes.jsonl"
+                existing = 0
+                if ep_file.exists():
+                    existing = sum(1 for _ in ep_file.read_text().strip().split("\n") if _.strip())
                 self._episode_count = existing
-                print(f"[Dataset] 已连接已有数据集: {output_path} (已有 {existing} 个 episode)")
-                return
-            except Exception:
-                # 加载失败（如数据不完整）→ 重建本地缓存，从 HF 重新同步
-                print(f"[Dataset] 本地缓存损坏，重建中...")
+                print(f"[Dataset] HF 已有 {existing} 个 episode，从 #{existing + 1} 开始 (仅下载 meta)")
+                # 删本地缓存，从头创建（后续只上传新 episode）
                 shutil.rmtree(output_path, ignore_errors=True)
 
         self._dataset = LeRobotDataset.create(
@@ -549,18 +556,38 @@ class DemoCollector:
     # ======================== 上传 ========================
 
     def _upload_current_episode(self):
-        """后台上传当前 episode 到 HuggingFace Hub。"""
+        """后台上传当前 episode 的新文件到 HF Hub（只传增量，不覆盖已有）。"""
 
         def _upload():
             ep = self._episode_count
             try:
-                print(f"[Hub] 后台上传 Episode #{ep}...")
-                self._dataset.push_to_hub(
-                    tags=["piper", "robot", "manipulation"],
-                    private=True,
-                    push_videos=False,
-                    license="apache-2.0",
-                )
+                from huggingface_hub import HfApi
+
+                api = HfApi()
+                dataset_root = self._dataset.root
+                repo_id = self._config.repo_id
+                ep_str = f"episode_{ep - 1:06d}"  # 0-indexed: ep #1 → episode_000000
+                print(f"[Hub] 后台上传 Episode #{ep} ({ep_str})...")
+
+                # 上传 parquet
+                parquet_dir = dataset_root / "data" / "chunk-000"
+                for pf in parquet_dir.glob(f"{ep_str}*.parquet"):
+                    api.upload_file(
+                        path_or_fileobj=str(pf),
+                        path_in_repo=f"data/chunk-000/{pf.name}",
+                        repo_id=repo_id,
+                        repo_type="dataset",
+                    )
+
+                # 上传 meta（更新 episodes.jsonl 等）
+                for mf in (dataset_root / "meta").glob("*.json*"):
+                    api.upload_file(
+                        path_or_fileobj=str(mf),
+                        path_in_repo=f"meta/{mf.name}",
+                        repo_id=repo_id,
+                        repo_type="dataset",
+                    )
+
                 print(f"[Hub] Episode #{ep} 上传完成")
             except Exception as e:
                 print(f"[Hub] Episode #{ep} 上传失败: {e}")
@@ -588,19 +615,31 @@ class DemoCollector:
                 t.join(timeout=120)
             self._pending_uploads.clear()
 
-        # 推送到 Hub (仅在非 stream 模式下全量推送)
+        # 推送到 Hub (只传增量文件，不覆盖已有)
         if self._config.repo_id and self._dataset:
-            if self._config.push_to_hub and not self._config.stream_hub:
-                print("[Hub] 正在推送完整数据集...")
-                self._dataset.push_to_hub(
-                    tags=["piper", "robot", "manipulation"],
-                    private=True,
-                    push_videos=False,
-                    license="apache-2.0",
-                )
-                print("[Hub] 推送完成")
-            elif self._config.stream_hub:
-                print("[Hub] 所有 episode 已逐条上传，数据集同步完成")
+            if self._config.push_to_hub or self._config.stream_hub:
+                if self._config.stream_hub:
+                    print("[Hub] 所有 episode 已逐条上传，数据集同步完成")
+                else:
+                    print("[Hub] 正在上传增量数据...")
+                    try:
+                        from huggingface_hub import HfApi
+
+                        api = HfApi()
+                        dataset_root = self._dataset.root
+                        repo_id = self._config.repo_id
+                        for f in dataset_root.rglob("*"):
+                            if f.is_file() and ".git" not in str(f):
+                                rel = str(f.relative_to(dataset_root))
+                                api.upload_file(
+                                    path_or_fileobj=str(f),
+                                    path_in_repo=rel,
+                                    repo_id=repo_id,
+                                    repo_type="dataset",
+                                )
+                        print("[Hub] 上传完成")
+                    except Exception as e:
+                        print(f"[Hub] 上传失败: {e}")
 
         print("[INFO] 采集器已退出 (机械臂保持使能)")
 
