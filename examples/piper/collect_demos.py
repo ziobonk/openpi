@@ -277,6 +277,8 @@ class CollectConfig:
     hf_revision: str = "main"
     # HuggingFace token (也可设环境变量 HF_TOKEN)
     hf_token: str | None = None
+    # 本地缓存目录 (默认 ~/.cache/huggingface/lerobot)
+    cache_dir: str | None = None
 
 
 class DemoCollector:
@@ -329,6 +331,11 @@ class DemoCollector:
 
             login(token=self._config.hf_token)
             print("[HF] 已登录")
+
+        # 设置本地缓存目录
+        if self._config.cache_dir:
+            os.environ["HF_LEROBOT_HOME"] = self._config.cache_dir
+            print(f"[Cache] 缓存目录: {self._config.cache_dir}")
 
         # 使能机械臂
         # if not self._robot.enable():
@@ -809,6 +816,7 @@ def _parse_args() -> CollectConfig:
     p.add_argument("--stream_batch", type=int, default=5, help="stream_hub 每 N 个 episode 上传一次 (默认 5)")
     p.add_argument("--hf_revision", default="main", help="HF 数据集分支 (默认 main，如 v2.1)")
     p.add_argument("--hf_token", default=None, help="HuggingFace token (也可设环境变量 HF_TOKEN)")
+    p.add_argument("--cache_dir", default=None, help="本地缓存目录 (默认 ~/.cache/huggingface/lerobot)")
     p.add_argument("--overwrite", action="store_true", help="覆盖已有数据集 (默认追加新 episode)")
     p.add_argument(
         "--no_preview",
@@ -844,6 +852,7 @@ def _parse_args() -> CollectConfig:
         stream_batch=args.stream_batch,
         hf_revision=args.hf_revision,
         hf_token=args.hf_token or os.environ.get("HF_TOKEN"),
+        cache_dir=args.cache_dir,
         teach_mode=args.teach_mode,
         no_preview=args.no_preview,
         overwrite=args.overwrite,
