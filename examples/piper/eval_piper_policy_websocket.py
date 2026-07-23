@@ -27,8 +27,8 @@ Piper 机械臂 WebSocket 推理脚本 — 使用 openpi 策略服务器。
 
     # 指定相机 (--base_serial=全局D435i, --wrist_serials=腕部D405)
     python examples/piper/eval_piper_policy_websocket.py \\
-        --host <GPU_IP> --port 8000 \\
-        --base_serial 128422272318 --wrist_serials 218722271368
+        --host localhost --port 6006 \\
+        --base_serial 231122071797 --wrist_serials 352122272178
 
 前置条件:
     1. CAN 模块已激活:  bash can_activate.sh can0 1000000
@@ -104,7 +104,7 @@ from piper_joint_controller import PiperJointController
 MODEL_IMAGE_SIZE = (224, 224)
 
 # 默认 action 参数 (与 pi05_piper_lora config 一致)
-DEFAULT_ACTION_HORIZON = 50
+DEFAULT_ACTION_HORIZON = 10  # 与 pi05_piper_lora config 一致
 DEFAULT_ACTION_DIM = 7  # 6 joints + 1 gripper
 
 # 默认控制频率 (策略调用频率)
