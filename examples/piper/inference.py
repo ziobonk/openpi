@@ -50,6 +50,7 @@ import threading
 import time
 from typing import Optional
 
+import cv2
 import numpy as np
 
 # ===========================================================================
@@ -89,16 +90,16 @@ from camera_utils import create_cameras
 # ===========================================================================
 
 # 默认动作块长度 (与模型 config 保持一致)
-DEFAULT_ACTION_HORIZON = 10
+DEFAULT_ACTION_HORIZON = 50
 # 每次执行多少步后再重新查询模型 (≤ action_horizon)
-DEFAULT_EXEC_HORIZON = 5
+DEFAULT_EXEC_HORIZON = 25
 # Piper 关节角: raw (0.001度) ↔ rad
 RAW_TO_RAD = np.pi / 180.0 / 1000.0
 RAD_TO_RAW = 180.0 * 1000.0 / np.pi
 # 图像尺寸 (必须与模型训练时一致)
 IMAGE_SIZE = (224, 224)
 # 默认控制频率 (Hz)
-CONTROL_FREQ = 50
+CONTROL_FREQ = 25
 # 默认速度百分比
 DEFAULT_SPEED_PCT = 40
 # 夹爪控制力矩
@@ -187,12 +188,12 @@ class PiperController:
 
     def send_joint_command(self, joints_rad: np.ndarray):
         """发送关节角指令，同时做限位保护。joints_rad.shape=(6,) 弧度。"""
-        clipped = np.clip(
-            joints_rad[:6],
-            JOINT_LIMITS_RAD[:, 0],
-            JOINT_LIMITS_RAD[:, 1],
-        )
-        raw = (clipped * RAD_TO_RAW).astype(int)
+        # clipped = np.clip(
+        #     joints_rad[:6],
+        #     JOINT_LIMITS_RAD[:, 0],
+        #     JOINT_LIMITS_RAD[:, 1],
+        # )
+        raw = (joints_rad[:6] * RAD_TO_RAW).astype(int)
         self._piper.JointCtrl(raw[0], raw[1], raw[2], raw[3], raw[4], raw[5])
 
     def send_gripper_command(self, pos_raw: float, effort: int = GRIPPER_EFFORT):
@@ -204,14 +205,14 @@ class PiperController:
 
         action.shape = (7,): [j1..j6(rad), gripper(raw_0.001mm)]
         """
-        self.set_joint_mode(speed_pct)
+        # self.set_joint_mode(speed_pct)
         self.send_joint_command(action[:6])
         self.send_gripper_command(action[6])
 
     def go_to_init_pose(self):
         """回到安全初始位姿（自定义）。"""
         print("[Piper] 回到初始位姿...")
-        init_joints = np.array([0.0, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
+        init_joints = np.array([-np.pi/2, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
         for _ in range(100):  # 分多步平滑移动
             self.set_joint_mode(20)
             self.send_joint_command(init_joints)
@@ -240,7 +241,7 @@ class PiperInference:
         cv_wrist_id: Optional[int] = None,
         action_horizon: int = DEFAULT_ACTION_HORIZON,
         exec_horizon: int = DEFAULT_EXEC_HORIZON,
-        default_prompt: str = "do something",
+        default_prompt: str = "pick up the walnut and place it into the cup",
         interactive: bool = False,
     ):
         self._action_horizon = action_horizon
@@ -305,6 +306,7 @@ class PiperInference:
         finally:
             if self._camera:
                 self._camera.stop()
+            cv2.destroyAllWindows()
             print("[INFO] 已退出 (机械臂保持使能)")
 
     def _connect_policy(self):
@@ -334,6 +336,7 @@ class PiperInference:
                 pass
 
             if not self._inferring:
+                self._display_cameras()
                 time.sleep(0.01)
                 continue
 
@@ -353,6 +356,10 @@ class PiperInference:
 
                 fps_counter.tick()
 
+                # 每 5 步显示一次相机画面
+                if fps_counter.count % 5 == 0:
+                    self._display_cameras()
+
                 # 定期打印状态
                 if fps_counter.count % 100 == 0:
                     state = self._robot.get_state()
@@ -369,6 +376,28 @@ class PiperInference:
             elapsed = time.monotonic() - loop_start
             if elapsed < self._period:
                 time.sleep(self._period - elapsed)
+
+    def _display_cameras(self):
+        """将所有相机画面拼接显示。"""
+        if not self._camera:
+            return
+
+        frames = []
+        if self._has_base_cam:
+            img = self._camera.get_base()
+            cv2.putText(img, "base", (5, 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            frames.append(img)
+        if self._has_wrist_cam:
+            img = self._camera.get_wrist()
+            cv2.putText(img, "wrist", (5, 18),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            frames.append(img)
+
+        if frames:
+            vis = np.concatenate(frames, axis=1) if len(frames) > 1 else frames[0]
+            cv2.imshow("Piper Inference", vis[..., ::-1])  # RGB → BGR
+            cv2.waitKey(1)
 
     def _query_policy(self):
         """向策略服务器查询动作块。"""
@@ -524,7 +553,7 @@ def _parse_args():
     )
     p.add_argument(
         "--prompt",
-        default="do something",
+        default="pick up the walnut and place it into the cup",
         help="默认语言指令",
     )
     p.add_argument(
