@@ -104,7 +104,7 @@ from piper_joint_controller import PiperJointController
 MODEL_IMAGE_SIZE = (224, 224)
 
 # 默认 action 参数 (与 pi05_piper_lora config 一致)
-DEFAULT_ACTION_HORIZON = 10  # 与 pi05_piper_lora config 一致
+DEFAULT_ACTION_HORIZON = 50  # 与 pi05_piper_lora config 一致
 DEFAULT_ACTION_DIM = 7  # 6 joints + 1 gripper
 
 # 默认控制频率 (策略调用频率)
@@ -330,9 +330,8 @@ class PiperWebsocketInference:
         if self.realsense is not None:
             print("[Camera] 正在启动相机...")
             self.realsense.start(wait=True)
-            # 设置曝光和白平衡
-            self.realsense.set_exposure(exposure=200, gain=0)
-            self.realsense.set_white_balance(white_balance=5900)
+            # D405 没有独立 color sensor，手动曝光设定可能失败 → 保持自动曝光
+            # 如需手动曝光请只对 D435i 设置（camera_0）
             time.sleep(1.0)
             print("[Camera] 相机就绪")
 
@@ -652,9 +651,12 @@ class PiperWebsocketInference:
             gripper_angle: float — 当前夹爪位置 (raw 0.001mm)
             timestamp: float — 时间戳
         """
-        # 相机: 取最新帧
-        k = max(1, int(self.dt * 30))  # 取覆盖 dt 时间窗口的帧
-        camera_data = self.realsense.get(k=k)
+        # 相机: 取最新 1 帧 (k=1, 避免刚启动时 count < k 崩溃)
+        try:
+            camera_data = self.realsense.get(k=1)
+        except AssertionError:
+            # 相机刚启动, ring buffer 还没有数据
+            camera_data = {}
 
         # 机器人状态: 取最新
         robot_state = self.robot.get_state()
@@ -662,7 +664,8 @@ class PiperWebsocketInference:
         obs = {}
         for cam_idx, cam_dict in camera_data.items():
             # camera_dict['color'] shape: (T, H, W, 3) uint8 RGB (经过 transform)
-            obs[f"camera_{cam_idx}"] = cam_dict["color"][-1]  # 最新帧
+            if cam_dict["color"].ndim == 4 and cam_dict["color"].shape[0] > 0:
+                obs[f"camera_{cam_idx}"] = cam_dict["color"][-1]  # 最新帧
 
         obs["joint_angles"] = robot_state["joint_angles"]        # (6,) rad
         obs["gripper_angle"] = robot_state["gripper_angle"]      # raw 0.001mm
