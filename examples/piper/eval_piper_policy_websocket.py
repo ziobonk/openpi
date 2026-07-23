@@ -420,7 +420,7 @@ class PiperWebsocketInference:
                     vis_img = self._get_vis_image(obs)
                     cv2.putText(
                         vis_img,
-                        f"Ep:{self._n_episodes} | Press C to start, Q to quit",
+                        f"Ep:{self._n_episodes} | C=start R=reset Q=quit",
                         (10, 20),
                         fontFace=cv2.FONT_HERSHEY_SIMPLEX,
                         fontScale=0.5,
@@ -598,6 +598,8 @@ class PiperWebsocketInference:
                         if key == ord("s"):
                             print("[Control] 用户停止 episode")
                             stop_episode = True
+                        elif key == ord("r"):
+                            self._reset_robot()
                         elif key == ord("q"):
                             print("[Control] 退出.")
                             self._running = False
@@ -609,6 +611,8 @@ class PiperWebsocketInference:
                         if key == ord("s"):
                             print("[Control] 用户停止 episode")
                             stop_episode = True
+                        elif key == ord("r"):
+                            self._reset_robot()
                         elif key == ord("q"):
                             print("[Control] 退出.")
                             self._running = False
@@ -727,21 +731,22 @@ class PiperWebsocketInference:
     # ======================== 机器人控制 ========================
 
     def _reset_robot(self):
-        """重置机械臂到初始关节角。"""
-        print("[Robot] 重置到初始关节位姿...")
-        was_inferring = self._inferring
+        """重置机械臂到初始关节角 [-pi/2, 0, 0, 0, 0, 0]。"""
+        print(f"[Robot] 重置到初始关节位姿: {np.array2string(self.init_joints, precision=3)}")
         self._inferring = False
+        self._action_cache = None
+        self._cache_step = 0
 
-        for _ in range(100):
+        # 分多步发送，确保机械臂平滑到达目标
+        for i in range(50):
             self.robot.schedule_waypoint(
                 joints=self.init_joints,
-                target_time=time.time() + 0.05,
+                target_time=time.time() + (i + 1) * 0.04,
                 gripper=0,
                 gripper_effort=1.5,
             )
             time.sleep(0.02)
 
-        self._inferring = was_inferring
         print("[Robot] 重置完成")
 
     # ======================== 录制管理 ========================
@@ -816,7 +821,7 @@ class PiperWebsocketInference:
     "--max_duration",
     "-md",
     type=float,
-    default=60.0,
+    default=180.0,
     help="单次 episode 最长秒数 (默认: 60)",
 )
 @click.option(
@@ -833,7 +838,7 @@ class PiperWebsocketInference:
 )
 @click.option(
     "--prompt",
-    default="pick up the object",
+    default="pick up the walnut and place it into the cup",
     help="语言指令",
 )
 @click.option(
