@@ -25,10 +25,10 @@ Piper 机械臂 WebSocket 推理脚本 — 使用 openpi 策略服务器。
         --host <GPU_IP> --port 8000 --can_name can0 \\
         --max_joint_speed 1.0
 
-    # 指定相机序列号
+    # 指定相机 (--base_serial=全局D435i, --wrist_serials=腕部D405)
     python examples/piper/eval_piper_policy_websocket.py \\
         --host <GPU_IP> --port 8000 \\
-        --camera_serials 128422272318 218722271368
+        --base_serial 128422272318 --wrist_serials 218722271368
 
 前置条件:
     1. CAN 模块已激活:  bash can_activate.sh can0 1000000
@@ -104,7 +104,7 @@ from piper_joint_controller import PiperJointController
 MODEL_IMAGE_SIZE = (224, 224)
 
 # 默认 action 参数 (与 pi05_piper_lora config 一致)
-DEFAULT_ACTION_HORIZON = 10
+DEFAULT_ACTION_HORIZON = 50
 DEFAULT_ACTION_DIM = 7  # 6 joints + 1 gripper
 
 # 默认控制频率 (策略调用频率)
@@ -139,7 +139,8 @@ class PiperWebsocketInference:
         host: str = "localhost",
         port: int = 8000,
         can_name: str = "can0",
-        camera_serials: Optional[list[str]] = None,
+        base_serial: Optional[str] = None,
+        wrist_serials: Optional[list[str]] = None,
         frequency: float = DEFAULT_FREQUENCY,
         action_horizon: int = DEFAULT_ACTION_HORIZON,
         exec_horizon: int = DEFAULT_EXEC_HORIZON,
@@ -197,15 +198,28 @@ class PiperWebsocketInference:
 
         # ---- 相机 ----
         if not no_camera:
-            if camera_serials is None:
+            # 组装相机序列号列表: [base (D435i), wrist_1 (D405), wrist_2 (D405)]
+            camera_serials: list[str] = []
+
+            if base_serial is not None:
+                camera_serials.append(base_serial)
+
+            if wrist_serials is not None:
+                camera_serials.extend(wrist_serials)
+
+            if not camera_serials:
+                # 均未指定 → 自动检测所有 RealSense 设备
                 camera_serials = SingleRealsense.get_connected_devices_serial()
-                print(f"[Camera] 自动检测到相机: {camera_serials}")
 
             if not camera_serials:
                 print("[Camera] 未检测到相机，将使用无相机模式")
-                self._camera_serials = []
             else:
-                self._camera_serials = camera_serials
+                camera_label = [f"camera_0=base({camera_serials[0]})"]
+                for i, s in enumerate(camera_serials[1:], 1):
+                    camera_label.append(f"camera_{i}=wrist({s})")
+                print(f"[Camera] 相机配置: {', '.join(camera_label)}")
+
+            self._camera_serials = camera_serials
         else:
             self._camera_serials = []
 
@@ -768,12 +782,17 @@ class PiperWebsocketInference:
 @click.option("--port", type=int, default=8000, help="策略服务器端口 (默认: 8000)")
 @click.option("--can_name", default="can0", help="CAN 接口名称 (默认: can0)")
 @click.option(
-    "--camera_serials",
-    "-cs",
+    "--base_serial",
+    "-bs",
+    default=None,
+    help="全局相机 D435i 序列号 (不指定则自动检测)",
+)
+@click.option(
+    "--wrist_serials",
+    "-ws",
     multiple=True,
     default=None,
-    help="相机序列号 (可多次指定). 不指定则自动检测. "
-    "camera_0=D435i(全局), camera_1=D405(腕部1), camera_2=D405(腕部2)",
+    help="腕部相机 D405 序列号 (可多次指定，最多2个). camera_1=腕部1, camera_2=腕部2",
 )
 @click.option(
     "--frequency", "-f", type=float, default=DEFAULT_FREQUENCY, help="控制频率 Hz (默认: 10)"
@@ -848,7 +867,8 @@ def main(
     host,
     port,
     can_name,
-    camera_serials,
+    base_serial,
+    wrist_serials,
     frequency,
     action_horizon,
     exec_horizon,
@@ -864,14 +884,15 @@ def main(
 ):
     cam_w, cam_h = [int(x) for x in camera_resolution.split("x")]
 
-    # camera_serials 是 tuple，None 表示自动检测
-    serials = list(camera_serials) if camera_serials else None
+    # wrist_serials 是 tuple，转为 list (None 表示未指定)
+    wrist_list = list(wrist_serials) if wrist_serials else None
 
     inference = PiperWebsocketInference(
         host=host,
         port=port,
         can_name=can_name,
-        camera_serials=serials,
+        base_serial=base_serial,
+        wrist_serials=wrist_list,
         frequency=frequency,
         action_horizon=action_horizon,
         exec_horizon=exec_horizon,
