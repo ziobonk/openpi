@@ -478,11 +478,7 @@ class PiperWebsocketInference:
                     else:
                         raw_obs = self._get_robot_state_only()
 
-                    obs_timestamp = (
-                        raw_obs["timestamp"][-1]
-                        if "timestamp" in raw_obs
-                        else time.time()
-                    )
+                    obs_timestamp = raw_obs.get("timestamp", time.time())
 
                     # ---- 推理 ----
                     t_infer_start = time.time()
