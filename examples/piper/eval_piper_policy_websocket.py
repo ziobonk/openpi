@@ -683,15 +683,33 @@ class PiperWebsocketInference:
         }
 
     def _get_vis_image(self, obs: dict) -> np.ndarray:
-        """获取可视化图像。"""
-        key = f"camera_{self.vis_camera_idx}"
-        if key in obs:
-            return obs[key].copy()
-        # fallback to first camera
-        for k in obs:
-            if k.startswith("camera_"):
-                return obs[k].copy()
-        return np.zeros((MODEL_IMAGE_SIZE[1], MODEL_IMAGE_SIZE[0], 3), dtype=np.uint8)
+        """将所有相机画面拼接成一张图，每路画面上打标签（camera_0=base, camera_1=wrist...）。"""
+        camera_keys = sorted(
+            [k for k in obs if k.startswith("camera_")],
+            key=lambda k: int(k.split("_")[1]),
+        )
+
+        if not camera_keys:
+            return np.zeros((MODEL_IMAGE_SIZE[1], MODEL_IMAGE_SIZE[0], 3), dtype=np.uint8)
+
+        frames = []
+        labels = ["base", "wrist_1", "wrist_2"]
+
+        for i, key in enumerate(camera_keys):
+            img = obs[key]
+            if img.ndim == 2:
+                img = cv2.cvtColor(img, cv2.COLOR_GRAY2RGB)
+            label = labels[i] if i < len(labels) else f"cam_{i}"
+            # 打标签
+            cv2.putText(
+                img, label, (5, 18),
+                fontFace=cv2.FONT_HERSHEY_SIMPLEX,
+                fontScale=0.5, thickness=1, color=(0, 255, 0),
+            )
+            frames.append(img)
+
+        # 水平拼接
+        return np.concatenate(frames, axis=1)
 
     def _build_observation(self, raw_obs: dict) -> dict:
         """将 raw obs 转换为 openpi WebSocket 服务器期望的格式。
