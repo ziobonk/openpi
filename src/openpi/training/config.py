@@ -21,6 +21,7 @@ import openpi.models.tokenizer as _tokenizer
 import openpi.policies.aloha_policy as aloha_policy
 import openpi.policies.droid_policy as droid_policy
 import openpi.policies.libero_policy as libero_policy
+import openpi.policies.dual_piper_policy as dual_piper_policy
 import openpi.policies.piper_policy as piper_policy
 import openpi.shared.download as _download
 import openpi.shared.normalize as _normalize
@@ -413,6 +414,60 @@ class LeRobotPiperDataConfig(DataConfigFactory):
                 inputs=[_transforms.DeltaActions(delta_action_mask)],
                 outputs=[_transforms.AbsoluteActions(delta_action_mask)],
             )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            local_data_root=os.path.abspath(self.local_data_dir) if self.local_data_dir else None,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
+class LeRobotDualPiperEEFDataConfig(DataConfigFactory):
+    """双臂 Piper EEF (末端位姿) 训练数据配置。
+
+    State/Action 均为 14 维:
+        [left_x, left_y, left_z, left_rx, left_ry, left_rz, left_gripper,
+         right_x, right_y, right_z, right_rx, right_ry, right_rz, right_gripper]
+
+    相机:
+        image              — 全局相机 (base)
+        wrist_image        — 左腕部相机
+        wrist_image_right  — 右腕部相机
+    """
+
+    use_delta_joint_actions: bool = False
+    local_data_dir: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        # Repack: dataset feature name → observation key
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/wrist_image_left": "wrist_image",
+                        "observation/wrist_image_right": "wrist_image_right",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[dual_piper_policy.DualPiperInputs(model_type=model_config.model_type)],
+            outputs=[dual_piper_policy.DualPiperOutputs(dual_piper_action_dim=14)],
+        )
+
+        if self.use_delta_joint_actions:
+            raise ValueError("EEF data does not support delta joint actions. Set use_delta_joint_actions=False.")
 
         model_transforms = ModelTransformFactory()(model_config)
 
@@ -918,6 +973,67 @@ _CONFIGS = [
             peak_lr=2e-5,
             decay_steps=50_000,
             decay_lr=2e-6,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        fsdp_devices=1,
+        num_train_steps=30_000,
+        save_interval=2000,
+        keep_period=10000,
+    ),
+    #
+    # Fine-tuning Dual Piper EEF configs (双臂末端位姿).
+    #
+    TrainConfig(
+        name="pi05_dual_piper_eef",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,  # EEF 位姿是连续值，非离散 token
+        ),
+        data=LeRobotDualPiperEEFDataConfig(
+            repo_id="dual_piper_eef",
+            assets=AssetsConfig(),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,  # EEF 是绝对位姿
+            local_data_dir="./data/dual_piper_eef_lerobot",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=2,  # 双臂 + 三路相机显存消耗大，先保守
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-4,
+            decay_steps=50_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        num_train_steps=30_000,
+        save_interval=2000,
+        keep_period=10000,
+    ),
+    TrainConfig(
+        name="pi0_dual_piper_eef",
+        model=pi0_config.Pi0Config(
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+        ),
+        data=LeRobotDualPiperEEFDataConfig(
+            repo_id="dual_piper_eef",
+            assets=AssetsConfig(),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=False,
+            local_data_dir="./data/dual_piper_eef_lerobot",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=2,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-4,
+            decay_steps=50_000,
+            decay_lr=1e-5,
         ),
         optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
         ema_decay=None,
