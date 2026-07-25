@@ -99,22 +99,32 @@ RAD_TO_RAW = 180.0 * 1000.0 / np.pi
 # 图像尺寸 (必须与模型训练时一致)
 IMAGE_SIZE = (224, 224)
 # 默认控制频率 (Hz)
-CONTROL_FREQ = 25
+CONTROL_FREQ = 50
 # 默认速度百分比
 DEFAULT_SPEED_PCT = 40
+# 默认最大关节速度 (rad/s), 3 rad/s ≈ 100% speed
+DEFAULT_MAX_JOINT_SPEED = 3.0
+# 默认插值频率 (Hz), None=不插值, 建议 50-200
+DEFAULT_INTERP_FREQ = 50
 # 夹爪控制力矩
 GRIPPER_EFFORT = 1000
-# 安全: 关节角限制 (弧度) — 根据实际机械臂调整
-JOINT_LIMITS_RAD = np.array(
-    [
-        [-2.8, 2.8],  # J1
-        [-1.5, 1.5],  # J2
-        [-2.8, 2.8],  # J3
-        [-2.8, 2.8],  # J4
-        [-1.5, 1.5],  # J5
-        [-2.8, 2.8],  # J6
-    ]
-)
+
+
+# ===========================================================================
+# 关节空间插值工具 (基于 demo_dual_replay.py _send_joint_cmd)
+# ===========================================================================
+
+def _shortest_delta(target: np.ndarray, start: np.ndarray) -> np.ndarray:
+    """最短弧差 (处理 ±π 缠绕)。"""
+    return (target - start + np.pi) % (2 * np.pi) - np.pi
+
+
+def _joint_arrived(cur: float, target: float, step: float) -> bool:
+    """检查关节是否已到达或将 overshoot 目标。"""
+    if abs(step) < 1e-10:
+        return True
+    return (step > 0 and cur + step >= target) or \
+           (step < 0 and cur + step <= target)
 
 
 # ===========================================================================
@@ -137,16 +147,27 @@ class PiperController:
 
     # ---- 使能 ----
 
-    def enable(self) -> bool:
+    def enable(self, speed_pct: int = DEFAULT_SPEED_PCT, max_acc: int = 200) -> bool:
         print("[Piper] 正在使能...")
-        deadline = time.monotonic() + 5.0
+        deadline = time.monotonic() + 10.0
         while not self._piper.EnablePiper():
             if time.monotonic() > deadline:
                 print("[Piper] 使能超时! 检查机械臂状态。")
                 return False
             time.sleep(0.01)
         self._enabled = True
-        self.set_joint_mode(DEFAULT_SPEED_PCT)
+        self.set_joint_mode(speed_pct)
+        # 设置各关节最大加速度 (写入 flash，需延迟)
+        for j in range(1, 7):
+            self._piper.JointMaxAccConfig(j, max_acc)
+            time.sleep(0.05)
+        # 夹爪初始化
+        self._piper.GripperCtrl(0, GRIPPER_EFFORT, 0x02, 0)
+        time.sleep(0.05)
+        self._piper.GripperCtrl(0, GRIPPER_EFFORT, 0x01, 0)
+        self._piper.GripperCtrl(0, GRIPPER_EFFORT, 0x02, 0)
+        time.sleep(0.05)
+        self._piper.GripperCtrl(0, GRIPPER_EFFORT, 0x01, 0)
         print("[Piper] 使能成功")
         return True
 
@@ -186,6 +207,10 @@ class PiperController:
     def set_joint_mode(self, speed_pct: int = DEFAULT_SPEED_PCT):
         self._piper.MotionCtrl_2(0x01, 0x01, speed_pct, 0x00)
 
+    def set_speed(self, speed_pct: int):
+        """动态调整速度百分比 (20-100)。"""
+        self._piper.MotionCtrl_2(0x01, 0x01, max(20, min(100, speed_pct)), 0x00)
+
     def send_joint_command(self, joints_rad: np.ndarray):
         """发送关节角指令，同时做限位保护。joints_rad.shape=(6,) 弧度。"""
         # clipped = np.clip(
@@ -209,14 +234,46 @@ class PiperController:
         self.send_joint_command(action[:6])
         self.send_gripper_command(action[6])
 
-    def go_to_init_pose(self):
-        """回到安全初始位姿（自定义）。"""
-        print("[Piper] 回到初始位姿...")
-        init_joints = np.array([-np.pi/2, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float32)
-        for _ in range(100):  # 分多步平滑移动
-            self.set_joint_mode(20)
-            self.send_joint_command(init_joints)
-            time.sleep(0.02)
+    def go_to_init_pose(self, max_joint_speed: float = DEFAULT_MAX_JOINT_SPEED,
+                         interp_freq: float = DEFAULT_INTERP_FREQ):
+        """使用插值平滑回到初始关节位姿 [-pi/2, 0, 0, 0, 0, 0]."""
+        init_joints = np.array([-np.pi / 2, 0.0, 0.0, 0.0, 0.0, 0.0], dtype=np.float64)
+        cur = self.get_joints_rad().astype(np.float64)
+        print(f"[Piper] 回到初始位姿: {np.array2string(init_joints, precision=3)}  "
+              f"当前: {np.array2string(cur, precision=3)}")
+
+        if interp_freq is not None:
+            inner_dt = 1.0 / interp_freq
+            delta = _shortest_delta(init_joints, cur)
+            max_delta = np.max(np.abs(delta))
+            if max_delta < 1e-6:
+                print("[Piper] 已在初始位姿")
+                return
+            joint_spd = min(max_delta * 2.0, max_joint_speed)  # ~0.5s to target
+            angle_per_tick_rad = joint_spd * inner_dt
+            tick_frac = np.where(np.abs(delta) > 0, delta / max_delta, 0.0)
+            speed_pct = int(joint_spd / 3.0 * 100)
+            self.set_speed(speed_pct)
+            while True:
+                done = True
+                step = tick_frac * angle_per_tick_rad
+                for j in range(6):
+                    if not _joint_arrived(cur[j], init_joints[j], step[j]):
+                        cur[j] += step[j]
+                        done = False
+                    else:
+                        cur[j] = init_joints[j]
+                self.send_joint_command(cur)
+                if done:
+                    break
+                time.sleep(inner_dt)
+        else:
+            for _ in range(50):
+                self.set_joint_mode(20)
+                self.send_joint_command(init_joints)
+                time.sleep(0.02)
+
+        self.send_gripper_command(0)
         print("[Piper] 已到初始位姿")
 
 
@@ -241,11 +298,16 @@ class PiperInference:
         cv_wrist_id: Optional[int] = None,
         action_horizon: int = DEFAULT_ACTION_HORIZON,
         exec_horizon: int = DEFAULT_EXEC_HORIZON,
+        max_joint_speed: float = DEFAULT_MAX_JOINT_SPEED,
+        interp_freq: Optional[float] = DEFAULT_INTERP_FREQ,
         default_prompt: str = "pick up the walnut and place it into the cup",
         interactive: bool = False,
     ):
         self._action_horizon = action_horizon
         self._exec_horizon = exec_horizon
+        self._max_joint_speed = max_joint_speed
+        self._interp_freq = interp_freq
+        self._use_interp = interp_freq is not None
         self._default_prompt = default_prompt
         self._interactive = interactive
         self._period = 1.0 / CONTROL_FREQ
@@ -278,7 +340,12 @@ class PiperInference:
     def run(self):
         print("=" * 60)
         print("Piper 推理客户端 (策略服务器模式)")
-        print(f"服务器: {self._policy_host}:{self._policy_port}")
+        print(f"服务器:         {self._policy_host}:{self._policy_port}")
+        print(f"控制频率:       {CONTROL_FREQ} Hz")
+        if self._use_interp:
+            print(f"关节插值:       启用 (max_speed={self._max_joint_speed:.1f} rad/s, freq={self._interp_freq} Hz)")
+        else:
+            print(f"关节插值:       关闭 (直接控制)")
         print("=" * 60)
 
         # 1. 使能机械臂
@@ -322,8 +389,12 @@ class PiperInference:
     # ======================== 控制循环 ========================
 
     def _control_loop(self):
-        """主控制循环。"""
+        """主控制循环 — 使用 joint-space 插值执行动作。"""
         fps_counter = _FPSCounter("control")
+        # 当前关节角 (用于插值的起点)
+        cur_joints: Optional[np.ndarray] = None
+        # 数据步长: 1/50s 对应模型 50Hz 数据频率
+        data_dt = 1.0 / CONTROL_FREQ
 
         while self._running:
             loop_start = time.monotonic()
@@ -346,12 +417,23 @@ class PiperInference:
             if self._action_cache is None or self._cache_step >= self._exec_horizon:
                 self._query_policy()
                 self._cache_step = 0
+                # 新 chunk 开始时，从机械臂读取当前关节角
+                cur_joints = self._robot.get_joints_rad().astype(np.float64)
 
             if self._action_cache is not None:
                 # 从 action chunk 中取当前步
                 idx = min(self._cache_step, self._action_cache.shape[0] - 1)
                 action = self._action_cache[idx]
-                self._robot.execute_action(action)
+
+                target_joints = action[:6].astype(np.float64)
+                gripper = float(action[6])
+
+                # 使用插值发送关节指令 (如果 cur_joints 为 None 则从机械臂读取)
+                if cur_joints is None:
+                    cur_joints = self._robot.get_joints_rad().astype(np.float64)
+                self._send_joint_cmd(cur_joints, target_joints, gripper, data_dt)
+                cur_joints = target_joints.copy()
+
                 self._cache_step += 1
 
                 fps_counter.tick()
@@ -366,16 +448,88 @@ class PiperInference:
                     j_str = ", ".join(f"{s:.3f}" for s in state[:6])
                     g_str = f"{state[6]:.0f}"
                     a_str = ", ".join(f"{a:.3f}" for a in action[:6])
+                    mode_str = "interp" if self._use_interp else "direct"
                     print(
                         f"[{fps_counter.count:5d}] fps={fps_counter.fps:.1f} | "
                         f"joints=[{j_str}] grip={g_str} | "
-                        f"cmd=[{a_str}] grip={action[6]:.0f}"
+                        f"cmd=[{a_str}] grip={action[6]:.0f} | {mode_str}"
                     )
 
             # 控制频率
             elapsed = time.monotonic() - loop_start
             if elapsed < self._period:
                 time.sleep(self._period - elapsed)
+
+    # ======================== 关节空间控制 (基于 demo_dual_replay.py) ========================
+
+    def _send_joint_cmd(
+        self,
+        cur_joints: np.ndarray,
+        target_joints: np.ndarray,
+        gripper: float,
+        data_dt: float,
+    ):
+        """发送一个关节角目标，可选带步间插值。
+
+        算法 (与 demo_dual_replay.py 相同):
+            1. 计算 delta = target - cur (最短弧)
+            2. joint_spd = min(|delta| * data_freq, max_joint_speed)
+            3. 动态调整 MotionCtrl_2 速度百分比
+            4. While 循环生成中间角度，每 tick 发送一次
+
+        Parameters
+        ----------
+        cur_joints : ndarray (6,) float64 — 当前关节角 (rad)
+        target_joints : ndarray (6,) float64 — 目标关节角 (rad)
+        gripper : float — 目标夹爪位置 (raw 0.001mm)
+        data_dt : float — 数据步长 (s)
+        """
+        delta = _shortest_delta(target_joints, cur_joints)
+        max_delta = np.max(np.abs(delta))
+
+        # 无插值模式: 直接发送
+        if not self._use_interp:
+            self._robot.send_joint_command(target_joints)
+            self._robot.send_gripper_command(gripper)
+            time.sleep(data_dt)
+            return
+
+        # 插值模式
+        if max_delta < 1e-6:
+            self._robot.send_gripper_command(gripper)
+            return
+
+        inner_dt = 1.0 / self._interp_freq
+
+        # joint_spd = delta_rad * data_freq (rad/s), capped
+        joint_spd = min(max_delta / data_dt, self._max_joint_speed)
+
+        # 动态速度百分比 (3 rad/s ≈ 100%)
+        speed_pct = max(20, min(100, int(joint_spd / 3.0 * 100)))
+        self._robot.set_speed(speed_pct)
+
+        # angle_per_tick in radians for the fastest joint
+        angle_per_tick_rad = joint_spd * inner_dt
+
+        # 各关节按比例推进
+        tick_frac = np.where(np.abs(delta) > 0, delta / max_delta, 0.0)
+
+        cur = cur_joints.copy()
+        while True:
+            done = True
+            step = tick_frac * angle_per_tick_rad
+            for j in range(6):
+                if not _joint_arrived(cur[j], target_joints[j], step[j]):
+                    cur[j] += step[j]
+                    done = False
+                else:
+                    cur[j] = target_joints[j]
+            self._robot.send_joint_command(cur)
+            if done:
+                break
+            time.sleep(inner_dt)
+
+        self._robot.send_gripper_command(gripper)
 
     def _display_cameras(self):
         """将所有相机画面拼接显示。"""
@@ -473,7 +627,10 @@ class PiperInference:
         elif cmd == "reset":
             was_inferring = self._inferring
             self._inferring = False
-            self._robot.go_to_init_pose()
+            self._robot.go_to_init_pose(
+                max_joint_speed=self._max_joint_speed,
+                interp_freq=self._interp_freq,
+            )
             self._inferring = was_inferring
 
     def _keyboard_listener(self):
@@ -553,13 +710,25 @@ def _parse_args():
     )
     p.add_argument(
         "--prompt",
-        default="pick up the walnut and place it into the cup",
+        default="pick up the pen and place it into the cup",
         help="默认语言指令",
     )
     p.add_argument(
         "--interactive",
         action="store_true",
         help="交互模式: 每次推理前手动输入指令",
+    )
+    p.add_argument(
+        "--max_joint_speed",
+        type=float,
+        default=DEFAULT_MAX_JOINT_SPEED,
+        help=f"最大关节速度 rad/s (默认: {DEFAULT_MAX_JOINT_SPEED})",
+    )
+    p.add_argument(
+        "--interp_freq",
+        type=float,
+        default=DEFAULT_INTERP_FREQ,
+        help=f"插值频率 Hz (默认: {DEFAULT_INTERP_FREQ}). 设为 0 禁用插值",
     )
     return p.parse_args()
 
@@ -577,6 +746,8 @@ def main():
         cv_wrist_id=args.cam_ids[1] if len(args.cam_ids) > 1 else None,
         action_horizon=args.action_horizon,
         exec_horizon=args.exec_horizon,
+        max_joint_speed=args.max_joint_speed,
+        interp_freq=args.interp_freq if args.interp_freq > 0 else None,
         default_prompt=args.prompt,
         interactive=args.interactive,
     )
