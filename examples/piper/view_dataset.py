@@ -10,7 +10,7 @@ Piper LeRobot 数据集可视化工具。
 
 用法:
     python examples/piper/view_dataset.py --data_dir ./piper_data
-    python examples/piper/view_dataset.py --data_dir ./piper_data --episode 0
+    python examples/piper/view_dataset.py --data_dir data/dual_piper_joint_lerobot --episode 0
     python examples/piper/view_dataset.py --data_dir ./piper_data --gif output.gif
 """
 
@@ -48,7 +48,6 @@ try:
 
     matplotlib.use("TkAgg")
     import matplotlib.pyplot as plt
-    from matplotlib.animation import FuncAnimation, FFMpegWriter
 
     HAS_MPL = True
 except ImportError:
@@ -154,12 +153,27 @@ def print_dataset_info(meta: dict, frames_per_episode: dict):
         # 关节范围
         state = np.stack(df["state"].values)
         actions = np.stack(df["actions"].values)
+        dual_arm = state.shape[1] == 14  # 双臂 14 维 vs 单臂 7 维
         for label, arr in [("state", state), ("actions", actions)]:
-            j_min = arr[:, :6].min(axis=0)
-            j_max = arr[:, :6].max(axis=0)
-            g_min, g_max = arr[:, 6].min(), arr[:, 6].max()
-            print(f"    {label}: joints=({j_min[0]:.2f}~{j_max[0]:.2f}, ..., "
-                  f"{j_min[5]:.2f}~{j_max[5]:.2f}) rad | gripper={g_min:.0f}~{g_max:.0f}")
+            if dual_arm:
+                # 左臂
+                lj_min = arr[:, :6].min(axis=0)
+                lj_max = arr[:, :6].max(axis=0)
+                lg_min, lg_max = arr[:, 6].min(), arr[:, 6].max()
+                print(f"    {label} (左): joints=({lj_min[0]:.2f}~{lj_max[0]:.2f}, ..., "
+                      f"{lj_min[5]:.2f}~{lj_max[5]:.2f}) rad | gripper={lg_min:.3f}~{lg_max:.3f}")
+                # 右臂
+                rj_min = arr[:, 7:13].min(axis=0)
+                rj_max = arr[:, 7:13].max(axis=0)
+                rg_min, rg_max = arr[:, 13].min(), arr[:, 13].max()
+                print(f"    {label} (右): joints=({rj_min[0]:.2f}~{rj_max[0]:.2f}, ..., "
+                      f"{rj_min[5]:.2f}~{rj_max[5]:.2f}) rad | gripper={rg_min:.3f}~{rg_max:.3f}")
+            else:
+                j_min = arr[:, :6].min(axis=0)
+                j_max = arr[:, :6].max(axis=0)
+                g_min, g_max = arr[:, 6].min(), arr[:, 6].max()
+                print(f"    {label}: joints=({j_min[0]:.2f}~{j_max[0]:.2f}, ..., "
+                      f"{j_min[5]:.2f}~{j_max[5]:.2f}) rad | gripper={g_min:.0f}~{g_max:.0f}")
 
 
 def _label_image(img: np.ndarray, label: str) -> np.ndarray:
@@ -197,20 +211,31 @@ def show_episode_gui(df, ep_idx: int, task: str = ""):
     ax_img.axis("off")
     img_show = ax_img.imshow(np.zeros((224, canvas_w, 3), dtype=np.uint8))
 
+    dual_arm = state.shape[1] == 14  # 双臂 14 维 vs 单臂 7 维
+
     # 关节轨迹
     ax_joints = fig.add_subplot(gs[0, 1])
     ax_joints.set_title("Joint Angles (state)")
     ax_joints.set_xlabel("frame")
     ax_joints.set_ylabel("rad")
     joint_names = ["J1", "J2", "J3", "J4", "J5", "J6"]
-    colors = plt.cm.tab10(np.linspace(0, 1, 6))
+    colors_left = plt.cm.tab10(np.linspace(0, 1, 6))
+    colors_right = plt.cm.Set2(np.linspace(0, 1, 6))
     joint_lines = []
-    for i, (name, c) in enumerate(zip(joint_names, colors)):
-        (line,) = ax_joints.plot([], [], label=name, color=c, linewidth=0.8)
+    right_joint_lines = []
+    for i, (name, c) in enumerate(zip(joint_names, colors_left)):
+        (line,) = ax_joints.plot([], [], label=f"L_{name}", color=c, linewidth=0.8)
         joint_lines.append(line)
-    ax_joints.legend(loc="upper right", fontsize=7, ncol=3)
+    if dual_arm:
+        for i, (name, c) in enumerate(zip(joint_names, colors_right)):
+            (line,) = ax_joints.plot([], [], label=f"R_{name}", color=c, linewidth=0.8, linestyle="--")
+            right_joint_lines.append(line)
+    ax_joints.legend(loc="upper right", fontsize=6, ncol=4)
     ax_joints.set_xlim(0, n_frames)
-    j_all = state[:, :6]
+    if dual_arm:
+        j_all = np.concatenate([state[:, :6], state[:, 7:13]], axis=0)
+    else:
+        j_all = state[:, :6]
     margin = 0.1
     ax_joints.set_ylim(j_all.min() - margin, j_all.max() + margin)
     cursor_line = ax_joints.axvline(0, color="red", alpha=0.5, linewidth=1)
@@ -219,11 +244,21 @@ def show_episode_gui(df, ep_idx: int, task: str = ""):
     ax_gripper = fig.add_subplot(gs[1, 0])
     ax_gripper.set_title("Gripper & Action Error")
     ax_gripper.set_xlabel("frame")
-    (grip_line,) = ax_gripper.plot([], [], "b-", label="gripper state", linewidth=0.8)
-    (diff_line,) = ax_gripper.plot([], [], "r-", label="state-action diff", linewidth=0.8)
+    (grip_line,) = ax_gripper.plot([], [], "b-", label="gripper L", linewidth=0.8)
+    (diff_line,) = ax_gripper.plot([], [], "r-", label="diff L", linewidth=0.8)
+    if dual_arm:
+        (grip_r_line,) = ax_gripper.plot([], [], "c-", label="gripper R", linewidth=0.8)
+        (diff_r_line,) = ax_gripper.plot([], [], "m-", label="diff R", linewidth=0.8)
+        grip_range = [min(state[:, 6].min(), state[:, 13].min()),
+                      max(state[:, 6].max(), state[:, 13].max())]
+    else:
+        grip_r_line = None
+        diff_r_line = None
+        grip_range = [state[:, 6].min(), state[:, 6].max()]
     ax_gripper.legend(fontsize=7)
     ax_gripper.set_xlim(0, n_frames)
-    ax_gripper.set_ylim(state[:, 6].min() - 50, state[:, 6].max() + 50)
+    padding = max(0.001, (grip_range[1] - grip_range[0]) * 0.1)
+    ax_gripper.set_ylim(grip_range[0] - padding, grip_range[1] + padding)
     cursor_grip = ax_gripper.axvline(0, color="red", alpha=0.5, linewidth=1)
 
     # 统计信息文本
@@ -265,29 +300,52 @@ def show_episode_gui(df, ep_idx: int, task: str = ""):
         # 关节线
         for i, line in enumerate(joint_lines):
             line.set_data(range(idx + 1), state[: idx + 1, i])
+        if dual_arm:
+            for i, line in enumerate(right_joint_lines):
+                line.set_data(range(idx + 1), state[: idx + 1, 7 + i])
         cursor_line.set_xdata([idx, idx])
 
         # 夹爪
         grip_line.set_data(range(idx + 1), state[: idx + 1, 6])
         diff_line.set_data(range(idx + 1), (state[: idx + 1, 6] - actions[: idx + 1, 6]))
+        if dual_arm:
+            grip_r_line.set_data(range(idx + 1), state[: idx + 1, 13])
+            diff_r_line.set_data(range(idx + 1), (state[: idx + 1, 13] - actions[: idx + 1, 13]))
         cursor_grip.set_xdata([idx, idx])
 
         # 信息
         s = state[idx]
         a = actions[idx]
-        j_str = "  ".join(f"{name}:{s[i]:7.3f}" for i, name in enumerate(joint_names))
-        info = (
-            f"Frame: {idx}/{n_frames - 1}\n"
-            f"Time:  {timestamps[idx]:.2f}s\n\n"
-            f"State joints (rad):\n  {j_str}\n"
-            f"State gripper: {s[6]:.0f}\n\n"
-            f"Action joints (rad):\n"
-            f"  {'  '.join(f'{name}:{a[i]:7.3f}' for i, name in enumerate(joint_names))}\n"
-            f"Action gripper: {a[6]:.0f}"
-        )
+        if dual_arm:
+            lj_str = "  ".join(f"L_{name}:{s[i]:7.3f}" for i, name in enumerate(joint_names))
+            rj_str = "  ".join(f"R_{name}:{s[7+i]:7.3f}" for i, name in enumerate(joint_names))
+            info = (
+                f"Frame: {idx}/{n_frames - 1}\n"
+                f"Time:  {timestamps[idx]:.2f}s\n\n"
+                f"Left joints (rad):\n  {lj_str}\n"
+                f"Left gripper: {s[6]:.4f}\n\n"
+                f"Right joints (rad):\n  {rj_str}\n"
+                f"Right gripper: {s[13]:.4f}\n\n"
+                f"Action L gripper: {a[6]:.4f}  R gripper: {a[13]:.4f}"
+            )
+        else:
+            j_str = "  ".join(f"{name}:{s[i]:7.3f}" for i, name in enumerate(joint_names))
+            info = (
+                f"Frame: {idx}/{n_frames - 1}\n"
+                f"Time:  {timestamps[idx]:.2f}s\n\n"
+                f"State joints (rad):\n  {j_str}\n"
+                f"State gripper: {s[6]:.0f}\n\n"
+                f"Action joints (rad):\n"
+                f"  {'  '.join(f'{name}:{a[i]:7.3f}' for i, name in enumerate(joint_names))}\n"
+                f"Action gripper: {a[6]:.0f}"
+            )
         info_text.set_text(info)
 
-        return [img_show, *joint_lines, cursor_line, grip_line, diff_line, cursor_grip, info_text]
+        artists = [img_show, *joint_lines, cursor_line, grip_line, diff_line, cursor_grip, info_text]
+        if dual_arm:
+            artists.extend(right_joint_lines)
+            artists.extend([grip_r_line, diff_r_line])
+        return artists
 
     def on_slider(val):
         update(val)
@@ -336,8 +394,11 @@ def export_gif(df, output_path: str, task: str = "", fps: int = 15, max_frames: 
 
     n = min(len(df), max_frames)
 
-    # 只看图像 + 关节的简化布局
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
+    # 布局: 相机画面 (左) + 关节轨迹 (右)
+    has_wrist = "wrist_image" in df.columns
+    has_wrist_r = "wrist_image_right" in df.columns
+
+    fig, axes = plt.subplots(1, 2, figsize=(14, 6), dpi=120)
     ax_img, ax_j = axes
     ax_img.axis("off")
     ax_j.set_title("Joint Angles")
@@ -346,8 +407,14 @@ def export_gif(df, output_path: str, task: str = "", fps: int = 15, max_frames: 
     ax_j.set_xlim(0, n)
 
     state = np.stack(df["state"].values)
-    ax_j.set_ylim(state[:, :6].min() - 0.1, state[:, :6].max() + 0.1)
-    colors = plt.cm.tab10(np.linspace(0, 1, 6))
+    dual_arm = state.shape[1] == 14
+    if dual_arm:
+        j_all = np.concatenate([state[:, :6], state[:, 7:13]], axis=0)
+    else:
+        j_all = state[:, :6]
+    ax_j.set_ylim(j_all.min() - 0.1, j_all.max() + 0.1)
+    colors_left = plt.cm.tab10(np.linspace(0, 1, 6))
+    colors_right = plt.cm.Set2(np.linspace(0, 1, 6))
 
     imgs = []
     for idx in range(n):
@@ -355,40 +422,62 @@ def export_gif(df, output_path: str, task: str = "", fps: int = 15, max_frames: 
         ax_img.axis("off")
 
         row = df.iloc[idx]
-        base = _decode_image(row, "image") if "image" in df.columns else np.zeros((224, 224, 3), dtype=np.uint8)
-        wrist = (
-            _decode_image(row, "wrist_image")
-            if "wrist_image" in df.columns
-            else np.zeros((224, 224, 3), dtype=np.uint8)
-        )
-        canvas = np.hstack([base, wrist])
+        cam_frames = [_decode_image(row, "image")]
+        cam_labels = ["base"]
+        if has_wrist:
+            cam_frames.append(_decode_image(row, "wrist_image"))
+            cam_labels.append("wrist")
+        if has_wrist_r:
+            cam_frames.append(_decode_image(row, "wrist_image_right"))
+            cam_labels.append("wrist_r")
+
+        # 给每个相机画面打标签
+        labeled = []
+        for img, lbl in zip(cam_frames, cam_labels):
+            out = img.copy()
+            cv2.putText(out, lbl, (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            labeled.append(out)
+        canvas = np.hstack(labeled)
         ax_img.imshow(canvas)
         ax_img.set_title(f"Episode — {task}", fontsize=10)
 
         ax_j.clear()
         ax_j.set_title(f"Joint Angles (frame {idx}/{n})")
-        for i, c in enumerate(colors):
-            ax_j.plot(range(idx + 1), state[: idx + 1, i], color=c, linewidth=0.6)
+        for i, c in enumerate(colors_left):
+            ax_j.plot(range(idx + 1), state[: idx + 1, i], color=c, linewidth=1.2,
+                      label=f"L_J{i+1}" if idx == 0 else None)
+        if dual_arm:
+            for i, c in enumerate(colors_right):
+                ax_j.plot(range(idx + 1), state[: idx + 1, 7 + i], color=c, linewidth=1.2,
+                          linestyle="--", label=f"R_J{i+1}" if idx == 0 else None)
+        if idx == 0:
+            ax_j.legend(loc="upper right", fontsize=5, ncol=4)
+        # 进度光标
+        ax_j.axvline(idx, color="red", alpha=0.5, linewidth=1.5)
         ax_j.set_xlim(0, n)
-        ax_j.set_ylim(state[:, :6].min() - 0.1, state[:, :6].max() + 0.1)
+        ax_j.set_ylim(j_all.min() - 0.1, j_all.max() + 0.1)
 
         fig.canvas.draw()
         data = np.frombuffer(fig.canvas.buffer_rgba(), dtype=np.uint8)
-        data = data.reshape(fig.canvas.get_width_height()[::-1] + (4,))
-        imgs.append(data[..., :3])
+        h, w = fig.canvas.get_width_height()[::-1]
+        data = data.reshape((h, w, 4))
+        imgs.append(data[..., :3].copy())  # .copy() 防止 canvas buffer 被复写
 
         if idx % 50 == 0:
             print(f"  GIF frame {idx}/{n}")
 
-    # 写 GIF
+    # 写 GIF — 用 PIL 直接写入，避免 FuncAnimation 渲染问题
     print(f"  导出 GIF → {output_path} ({len(imgs)} frames)")
-    from matplotlib.animation import PillowWriter
+    from PIL import Image as PILImage
 
-    writer = PillowWriter(fps=fps)
-    fig2, ax2 = plt.subplots(figsize=(12, 5))
-    ax2.axis("off")
-    ani = FuncAnimation(fig2, lambda i: [ax2.imshow(imgs[i]), ax2.set_title(f"frame {i}")], frames=len(imgs))
-    ani.save(output_path, writer=writer, dpi=100)
+    pil_frames = [PILImage.fromarray(img) for img in imgs]
+    pil_frames[0].save(
+        output_path,
+        save_all=True,
+        append_images=pil_frames[1:],
+        duration=int(1000 / fps),
+        loop=0,
+    )
     plt.close("all")
     print(f"  完成: {output_path}")
 

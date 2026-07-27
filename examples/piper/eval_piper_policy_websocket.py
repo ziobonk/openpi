@@ -108,8 +108,8 @@ DEFAULT_ACTION_HORIZON = 50  # 与 pi05_piper_lora config 一致
 DEFAULT_ACTION_DIM = 7  # 6 joints + 1 gripper
 
 # 默认控制频率 (策略调用频率)
-DEFAULT_FREQUENCY = 10  # Hz
-DEFAULT_EXEC_HORIZON = 8
+DEFAULT_FREQUENCY = 50  # Hz
+DEFAULT_EXEC_HORIZON = 25
 
 # 录制默认参数
 DEFAULT_VIDEO_CAPTURE_FPS = 30
@@ -271,7 +271,7 @@ class PiperWebsocketInference:
         self.robot = PiperJointController(
             shm_manager=self.shm_manager,
             can_name=can_name,
-            frequency=50,  # 内部控制循环 50Hz
+            frequency=200,  # 内部控制循环 50Hz
             max_joint_speed=max_joint_speed,
             speed_pct=speed_pct,
             launch_timeout=10,
@@ -619,7 +619,7 @@ class PiperWebsocketInference:
                     # ---- 自动终止 ----
                     if time.monotonic() - t_start > self.max_duration:
                         print(f"[Episode {self._n_episodes}] 超时 ({self.max_duration}s)")
-                        stop_episode = True
+                        # stop_episode = True
 
                     if stop_episode:
                         if self._recording_active:
@@ -755,7 +755,7 @@ class PiperWebsocketInference:
         for i in range(50):
             self.robot.schedule_waypoint(
                 joints=self.init_joints,
-                target_time=time.time() + (i + 1) * 0.04,
+                target_time=time.time() + (i + 1) * 0.1,
                 gripper=0,
                 gripper_effort=1.5,
             )

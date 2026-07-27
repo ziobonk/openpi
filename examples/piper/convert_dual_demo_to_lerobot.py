@@ -15,7 +15,7 @@
 
     # 指定输入输出
     python examples/piper/convert_dual_demo_to_lerobot.py \
-        --input data/dual_demo/replay_buffer.zarr \
+        --input /home/rhr/diffusion_policy_piper/data/dual_demo/replay_buffer.zarr \
         --output data/dual_piper_joint_lerobot \
         --mode joint
 """

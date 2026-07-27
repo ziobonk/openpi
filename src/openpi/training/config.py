@@ -1161,6 +1161,77 @@ _CONFIGS = [
         keep_period=10000,
     ),
     #
+    # Fine-tuning Dual Piper Joint LoRA configs (双臂关节空间, 低显存).
+    #
+    TrainConfig(
+        name="pi05_dual_piper_joint_lora",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=50,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotDualPiperJointDataConfig(
+            repo_id="dual_piper_joint",
+            assets=AssetsConfig(),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=True,
+            local_data_dir="./data/dual_piper_joint_lerobot",
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            pi05=True, paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=32,  # LoRA 显存更小，可适度提高
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-4,
+            decay_steps=50_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        num_train_steps=30_000,
+        save_interval=2000,
+        keep_period=10000,
+    ),
+    TrainConfig(
+        name="pi0_dual_piper_joint_lora",
+        model=pi0_config.Pi0Config(
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+            paligemma_variant="gemma_2b_lora",
+            action_expert_variant="gemma_300m_lora",
+        ),
+        data=LeRobotDualPiperJointDataConfig(
+            repo_id="dual_piper_joint",
+            assets=AssetsConfig(),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=True,
+            local_data_dir="./data/dual_piper_joint_lerobot",
+        ),
+        freeze_filter=pi0_config.Pi0Config(
+            paligemma_variant="gemma_2b_lora", action_expert_variant="gemma_300m_lora"
+        ).get_freeze_filter(),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=4,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-4,
+            decay_steps=50_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        fsdp_devices=1,
+        num_train_steps=30_000,
+        save_interval=2000,
+        keep_period=10000,
+    ),
+    #
     # Fine-tuning Aloha configs.
     #
     # This is a test config that is used to illustate how train on a custom LeRobot dataset.

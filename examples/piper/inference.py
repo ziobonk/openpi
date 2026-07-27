@@ -15,8 +15,8 @@ Piper 机械臂推理脚本 — 通过策略服务器控制机械臂。
     python examples/piper/inference.py --host <GPU_SERVER_IP> --port 8000
 
     # RealSense D435i/D405 相机
-    python examples/piper/inference.py --host <GPU_SERVER_IP> --port 8000 \
-        --rs2_base 128422272318 --rs2_wrist 218722271368
+    python examples/piper/inference.py --host localhost --port 6006 \
+        --rs2_base 231122071797 --rs2_wrist 352122272178
 
     # OpenCV webcam 回退
     python examples/piper/inference.py --host 192.168.1.100 --port 8000 \
@@ -99,13 +99,13 @@ RAD_TO_RAW = 180.0 * 1000.0 / np.pi
 # 图像尺寸 (必须与模型训练时一致)
 IMAGE_SIZE = (224, 224)
 # 默认控制频率 (Hz)
-CONTROL_FREQ = 50
+CONTROL_FREQ = 100
 # 默认速度百分比
 DEFAULT_SPEED_PCT = 40
 # 默认最大关节速度 (rad/s), 3 rad/s ≈ 100% speed
 DEFAULT_MAX_JOINT_SPEED = 3.0
 # 默认插值频率 (Hz), None=不插值, 建议 50-200
-DEFAULT_INTERP_FREQ = 50
+DEFAULT_INTERP_FREQ = 200
 # 夹爪控制力矩
 GRIPPER_EFFORT = 1000
 
