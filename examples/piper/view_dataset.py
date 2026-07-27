@@ -108,8 +108,8 @@ def _decode_image(row, key: str) -> np.ndarray:
         return np.zeros((224, 224, 3), dtype=np.uint8)
 
     if isinstance(data, bytes):
-        if data[:4] == b"\x89PNG":
-            # PNG → decode via cv2
+        if data[:4] == b"\x89PNG" or data[:2] == b"\xff\xd8":
+            # PNG or JPEG → decode via cv2
             arr = np.frombuffer(data, np.uint8)
             img = cv2.imdecode(arr, cv2.IMREAD_COLOR)
             return cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
@@ -242,8 +242,10 @@ def show_episode_gui(df, ep_idx: int, task: str = ""):
             row = df.iloc[idx]
             if has_image:
                 base = _decode_image(row, "image")
+                cv2.imwrite('base.jpg',cv2.cvtColor(base, cv2.COLOR_RGB2BGR))
             if has_wrist:
                 wrist = _decode_image(row, "wrist_image")
+                cv2.imwrite('wrist.jpg',cv2.cvtColor(wrist, cv2.COLOR_RGB2BGR))
             canvas = np.hstack([base, wrist])
             img_show.set_data(canvas)
 
