@@ -481,6 +481,63 @@ class LeRobotDualPiperEEFDataConfig(DataConfigFactory):
 
 
 @dataclasses.dataclass(frozen=True)
+class LeRobotDualPiperJointDataConfig(DataConfigFactory):
+    """双臂 Piper 关节角训练数据配置。
+
+    State/Action 均为 14 维关节角:
+        [left_j1..j6(rad), left_gripper(raw), right_j1..j6(rad), right_gripper(raw)]
+
+    相机:
+        image              — 全局相机 (base)
+        wrist_image        — 左腕部相机
+        wrist_image_right  — 右腕部相机
+    """
+
+    use_delta_joint_actions: bool = True
+    local_data_dir: str | None = None
+
+    @override
+    def create(self, assets_dirs: pathlib.Path, model_config: _model.BaseModelConfig) -> DataConfig:
+        repack_transform = _transforms.Group(
+            inputs=[
+                _transforms.RepackTransform(
+                    {
+                        "observation/image": "image",
+                        "observation/wrist_image_left": "wrist_image",
+                        "observation/wrist_image_right": "wrist_image_right",
+                        "observation/state": "state",
+                        "actions": "actions",
+                        "prompt": "prompt",
+                    }
+                )
+            ]
+        )
+
+        data_transforms = _transforms.Group(
+            inputs=[dual_piper_policy.DualPiperInputs(model_type=model_config.model_type)],
+            outputs=[dual_piper_policy.DualPiperOutputs(dual_piper_action_dim=14)],
+        )
+
+        if self.use_delta_joint_actions:
+            # 前12维 (6+6 关节) 做 delta，最后两维夹爪保持 absolute
+            delta_action_mask = _transforms.make_bool_mask(6, -1, 6, -1)
+            data_transforms = data_transforms.push(
+                inputs=[_transforms.DeltaActions(delta_action_mask)],
+                outputs=[_transforms.AbsoluteActions(delta_action_mask)],
+            )
+
+        model_transforms = ModelTransformFactory()(model_config)
+
+        return dataclasses.replace(
+            self.create_base_config(assets_dirs, model_config),
+            repack_transforms=repack_transform,
+            data_transforms=data_transforms,
+            model_transforms=model_transforms,
+            local_data_root=os.path.abspath(self.local_data_dir) if self.local_data_dir else None,
+        )
+
+
+@dataclasses.dataclass(frozen=True)
 class RLDSDroidDataConfig(DataConfigFactory):
     """
     Config for training on DROID, using RLDS data format (for efficient training on larger datasets).
@@ -1026,6 +1083,67 @@ _CONFIGS = [
             base_config=DataConfig(prompt_from_task=True),
             use_delta_joint_actions=False,
             local_data_dir="./data/dual_piper_eef_lerobot",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
+        batch_size=2,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-4,
+            decay_steps=50_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        fsdp_devices=1,
+        num_train_steps=30_000,
+        save_interval=2000,
+        keep_period=10000,
+    ),
+    #
+    # Fine-tuning Dual Piper Joint configs (双臂关节空间).
+    #
+    TrainConfig(
+        name="pi05_dual_piper_joint",
+        model=pi0_config.Pi0Config(
+            pi05=True,
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,  # 关节角是连续值
+        ),
+        data=LeRobotDualPiperJointDataConfig(
+            repo_id="dual_piper_joint",
+            assets=AssetsConfig(),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=True,
+            local_data_dir="./data/dual_piper_joint_lerobot",
+        ),
+        weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi05_base/params"),
+        batch_size=2,
+        lr_schedule=_optimizer.CosineDecaySchedule(
+            warmup_steps=500,
+            peak_lr=1e-4,
+            decay_steps=50_000,
+            decay_lr=1e-5,
+        ),
+        optimizer=_optimizer.AdamW(clip_gradient_norm=1.0),
+        ema_decay=None,
+        num_train_steps=30_000,
+        save_interval=2000,
+        keep_period=10000,
+    ),
+    TrainConfig(
+        name="pi0_dual_piper_joint",
+        model=pi0_config.Pi0Config(
+            action_dim=32,
+            action_horizon=10,
+            discrete_state_input=False,
+        ),
+        data=LeRobotDualPiperJointDataConfig(
+            repo_id="dual_piper_joint",
+            assets=AssetsConfig(),
+            base_config=DataConfig(prompt_from_task=True),
+            use_delta_joint_actions=True,
+            local_data_dir="./data/dual_piper_joint_lerobot",
         ),
         weight_loader=weight_loaders.CheckpointWeightLoader("gs://openpi-assets/checkpoints/pi0_base/params"),
         batch_size=2,
