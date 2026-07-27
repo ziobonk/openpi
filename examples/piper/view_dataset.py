@@ -162,6 +162,13 @@ def print_dataset_info(meta: dict, frames_per_episode: dict):
                   f"{j_min[5]:.2f}~{j_max[5]:.2f}) rad | gripper={g_min:.0f}~{g_max:.0f}")
 
 
+def _label_image(img: np.ndarray, label: str) -> np.ndarray:
+    """在图像左上角打标签。"""
+    out = img.copy()
+    cv2.putText(out, label, (5, 18), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+    return out
+
+
 def show_episode_gui(df, ep_idx: int, task: str = ""):
     """交互式 GUI 播放 episode。"""
     if not HAS_MPL or not HAS_CV2:
@@ -176,16 +183,19 @@ def show_episode_gui(df, ep_idx: int, task: str = ""):
     # 检查是否有图像
     has_image = "image" in df.columns
     has_wrist = "wrist_image" in df.columns
+    has_wrist_right = "wrist_image_right" in df.columns
+    n_cams = sum([has_image, has_wrist, has_wrist_right])
 
     # ---- 创建界面 ----
     fig = plt.figure("Piper Dataset Viewer", figsize=(14, 9))
     gs = fig.add_gridspec(2, 2, height_ratios=[3, 2], hspace=0.3, wspace=0.25)
 
-    # 图像: base + wrist
+    # 图像: base + wrist + wrist_right (水平拼接)
+    canvas_w = 224 * max(n_cams, 1)
     ax_img = fig.add_subplot(gs[0, 0])
-    ax_img.set_title("Camera")
+    ax_img.set_title("Cameras")
     ax_img.axis("off")
-    img_show = ax_img.imshow(np.zeros((224, 448, 3), dtype=np.uint8))
+    img_show = ax_img.imshow(np.zeros((224, canvas_w, 3), dtype=np.uint8))
 
     # 关节轨迹
     ax_joints = fig.add_subplot(gs[0, 1])
@@ -236,17 +246,20 @@ def show_episode_gui(df, ep_idx: int, task: str = ""):
         """刷新所有子图到指定帧。"""
         idx = int(frame_idx)
         # 图像
-        if has_image or has_wrist:
-            base = np.zeros((224, 224, 3), dtype=np.uint8)
-            wrist = np.zeros((224, 224, 3), dtype=np.uint8)
+        if has_image or has_wrist or has_wrist_right:
             row = df.iloc[idx]
+            frames = []
+            labels = ["base", "wrist", "wrist_r"]
             if has_image:
-                base = _decode_image(row, "image")
-                cv2.imwrite('base.jpg',cv2.cvtColor(base, cv2.COLOR_RGB2BGR))
+                img = _decode_image(row, "image")
+                frames.append(_label_image(img, labels[0]))
             if has_wrist:
-                wrist = _decode_image(row, "wrist_image")
-                cv2.imwrite('wrist.jpg',cv2.cvtColor(wrist, cv2.COLOR_RGB2BGR))
-            canvas = np.hstack([base, wrist])
+                img = _decode_image(row, "wrist_image")
+                frames.append(_label_image(img, labels[1]))
+            if has_wrist_right:
+                img = _decode_image(row, "wrist_image_right")
+                frames.append(_label_image(img, labels[2]))
+            canvas = np.hstack(frames) if frames else np.zeros((224, 224, 3), dtype=np.uint8)
             img_show.set_data(canvas)
 
         # 关节线
